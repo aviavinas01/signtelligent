@@ -1,0 +1,2 @@
+Best model: RandomForest  |  Test accuracy: 97.70%
+

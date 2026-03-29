@@ -1,0 +1,20 @@
+{
+  "seq_len": 30,
+  "n_features": 132,
+  "num_phrases": 12,
+  "val_accuracy": 1.0,
+  "phrase_ids": [
+    "hello_how_are_you",
+    "thank_you",
+    "i_love_you",
+    "yes_please",
+    "no_thank_you",
+    "please_stop",
+    "good_morning",
+    "nice_to_meet_you",
+    "i_am_fine",
+    "help_me_please",
+    "you_are_welcome",
+    "see_you_later"
+  ]
+}
