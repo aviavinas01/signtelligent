@@ -1,218 +1,259 @@
 /**
- * SignDisplay.jsx
- * Shows the current predicted gesture with emoji, confidence bar,
- * top-K alternatives, and a TTS speak button.
+ * SignDisplay.tsx — Redesigned
+ * Fixed LSTM field names: phrase, display, confidence, top_k, status
+ * Added animated reveal, confidence ring around emoji, better layout
  */
 import { useEffect, useRef, useState } from "react";
-import { Volume2, VolumeX, Zap } from "lucide-react";
+import { Volume2, VolumeX, Plus } from "lucide-react";
 
-const CONFIDENCE_COLORS = [
-    { threshold: 0.85, color: "#39ff14", label: "HIGH" },
-    { threshold: 0.65, color: "#ffb800", label: "MEDIUM" },
-    { threshold: 0.0, color: "#ff3d5a", label: "LOW" },
-];
-
-function getConfidenceInfo(conf) {
-    for (const { threshold, color, label } of CONFIDENCE_COLORS) {
-        if (conf >= threshold) return { color, label };
-    }
-    return { color: "#4a5568", label: "—" };
+interface TopKItem {
+  gesture?: string;
+  phrase?: string;
+  display: string;
+  emoji?: string;
+  confidence: number;
 }
 
-export default function SignDisplay({ result, onAddToSentence }) {
-    const [ttsEnabled, setTtsEnabled] = useState(true);
-    const [speaking, setSpeaking] = useState(false);
-    const lastSpokenRef = useRef("");
+interface PredictResult {
+  status?: string;
+  phrase?: string;
+  gesture?: string;
+  display?: string;
+  emoji?: string;
+  confidence?: number;
+  top_k?: TopKItem[];
+}
 
-    const gesture = result?.gesture || "";
-    const display = result?.display || "";
-    const emoji = result?.emoji || "";
-    const confidence = result?.confidence || 0;
-    const topK = result?.top_k || [];
-    const handDetected = result?.hand_detected ?? false;
-    const fps = result?.fps || 0;
+const CONF_COLORS = [
+  { threshold: 0.85, color: "#39ff14", label: "HIGH", bg: "rgba(57,255,20,0.08)" },
+  { threshold: 0.60, color: "#ffb800", label: "MED",  bg: "rgba(255,184,0,0.08)" },
+  { threshold: 0.0,  color: "#ff3d5a", label: "LOW",  bg: "rgba(255,61,90,0.08)" },
+];
 
-    const isActive = gesture && gesture !== "no_gesture" && handDetected;
-    const { color: confColor, label: confLabel } = getConfidenceInfo(confidence);
+function confInfo(c: number) {
+  return CONF_COLORS.find(({ threshold }) => c >= threshold) ?? CONF_COLORS[2];
+}
 
-    // ── Auto-speak new gestures ──────────────────────────────────────────────────
-    useEffect(() => {
-        if (!ttsEnabled || !isActive || !display) return;
-        if (display === lastSpokenRef.current) return;
-        lastSpokenRef.current = display;
-        speak(display);
-    }, [display, isActive, ttsEnabled]);
+export default function SignDisplay({
+  result,
+  onAddToSentence,
+}: {
+  result: PredictResult | null;
+  onAddToSentence?: (word: string) => void;
+}) {
+  const [ttsEnabled, setTtsEnabled] = useState(true);
+  const [speaking, setSpeaking]     = useState(false);
+  const [animKey, setAnimKey]       = useState(0);
+  const lastSpokenRef               = useRef("");
 
-    function speak(text) {
-        if (!("speechSynthesis" in window)) return;
-        window.speechSynthesis.cancel();
-        const utt = new SpeechSynthesisUtterance(text);
-        utt.rate = 1.0;
-        utt.pitch = 1.0;
-        utt.volume = 1.0;
-        utt.onstart = () => setSpeaking(true);
-        utt.onend = () => setSpeaking(false);
-        window.speechSynthesis.speak(utt);
-    }
+  // Support both frame-model (gesture) and LSTM (phrase) field names
+  const phrase     = (result?.phrase ?? result?.gesture ?? "") as string;
+  const display    = (result?.display ?? "") as string;
+  const emoji      = (result?.emoji ?? "🤟") as string;
+  const confidence = (result?.confidence ?? 0) as number;
+  const topK       = (result?.top_k ?? []) as TopKItem[];
+  const isOk       = result?.status === "ok" && !!display;
 
-    return (
-        <div className="flex flex-col gap-4 h-full">
+  const { color, label, bg } = confInfo(confidence);
 
-            {/* ── Main prediction card ─────────────────────────────────────────── */}
-            <div
-                className={`relative flex-1 rounded-2xl p-6 flex flex-col items-center justify-center transition-all duration-500 overflow-hidden
-          ${isActive ? "glow-border-signal" : "glow-border"}`}
-                style={{
-                    background: isActive
-                        ? "linear-gradient(135deg, #0d1f0f 0%, #0a1520 100%)"
-                        : "linear-gradient(135deg, #0d1520 0%, #0a0b14 100%)",
-                }}
-            >
-                {/* Background accent glow */}
-                {isActive && (
-                    <div
-                        className="absolute inset-0 opacity-10 pointer-events-none"
-                        style={{
-                            background: `radial-gradient(ellipse at center, ${confColor}60 0%, transparent 70%)`,
-                        }}
-                    />
-                )}
+  // Trigger re-animation on new result
+  useEffect(() => {
+    if (isOk) setAnimKey((k) => k + 1);
+  }, [phrase, isOk]);
 
-                {isActive ? (
-                    <>
-                        {/* Emoji */}
-                        <div
-                            className="text-7xl mb-4 transition-all duration-300 select-none"
-                            style={{ filter: `drop-shadow(0 0 20px ${confColor}60)` }}
-                        >
-                            {emoji}
-                        </div>
+  // Auto-speak
+  useEffect(() => {
+    if (!ttsEnabled || !isOk || !display) return;
+    if (display === lastSpokenRef.current) return;
+    lastSpokenRef.current = display;
+    speak(display);
+  }, [display, isOk, ttsEnabled]);
 
-                        {/* Display name */}
-                        <h2 className="text-4xl font-bold tracking-tight text-white text-center leading-tight">
-                            {display}
-                        </h2>
+  function speak(text: string) {
+    if (!("speechSynthesis" in window)) return;
+    window.speechSynthesis.cancel();
+    const utt = new SpeechSynthesisUtterance(text);
+    utt.rate = 0.95; utt.pitch = 1.0; utt.volume = 1.0;
+    utt.onstart = () => setSpeaking(true);
+    utt.onend   = () => setSpeaking(false);
+    window.speechSynthesis.speak(utt);
+  }
 
-                        {/* Confidence bar */}
-                        <div className="w-full mt-6 px-2">
-                            <div className="flex justify-between items-center mb-2">
-                                <span className="text-xs font-mono text-[#4a5568] tracking-widest">CONFIDENCE</span>
-                                <div className="flex items-center gap-2">
-                                    <span
-                                        className="text-xs font-mono font-semibold tracking-widest"
-                                        style={{ color: confColor }}
-                                    >
-                                        {confLabel}
-                                    </span>
-                                    <span
-                                        className="text-sm font-mono font-bold"
-                                        style={{ color: confColor }}
-                                    >
-                                        {(confidence * 100).toFixed(0)}%
-                                    </span>
-                                </div>
-                            </div>
-                            <div className="h-2 rounded-full bg-[#0f172a] overflow-hidden">
-                                <div
-                                    className="h-full rounded-full confidence-fill"
-                                    style={{
-                                        width: `${confidence * 100}%`,
-                                        background: `linear-gradient(90deg, ${confColor}80, ${confColor})`,
-                                        boxShadow: `0 0 8px ${confColor}60`,
-                                    }}
-                                />
-                            </div>
-                        </div>
+  // Confidence ring (SVG circle for emoji halo)
+  const RING_R = 46, RING_C = 50;
+  const circ = 2 * Math.PI * RING_R;
+  const offset = circ * (1 - confidence);
 
-                        {/* Action buttons */}
-                        <div className="flex gap-3 mt-5">
-                            <button
-                                onClick={() => onAddToSentence?.(display)}
-                                className="flex items-center gap-2 px-4 py-2 rounded-xl bg-[#00e5ff15] border border-[#00e5ff30] text-[#00e5ff] text-sm font-medium hover:bg-[#00e5ff25] transition-colors"
-                            >
-                                <Zap className="w-4 h-4" />
-                                Add to sentence
-                            </button>
-                            <button
-                                onClick={() => speak(display)}
-                                disabled={speaking}
-                                className="flex items-center gap-2 px-4 py-2 rounded-xl bg-[#39ff1415] border border-[#39ff1430] text-[#39ff14] text-sm font-medium hover:bg-[#39ff1425] transition-colors disabled:opacity-50"
-                            >
-                                <Volume2 className="w-4 h-4" />
-                                Speak
-                            </button>
-                        </div>
-                    </>
-                ) : (
-                    <div className="flex flex-col items-center gap-3 text-center">
-                        <div className="text-5xl opacity-30 select-none">
-                            {handDetected ? "❓" : "🤚"}
-                        </div>
-                        <p className="text-[#4a5568] text-base font-medium">
-                            {handDetected
-                                ? "Gesture unclear — adjust your hand"
-                                : "Show your hand to the camera"}
-                        </p>
-                        <p className="text-[#2d3748] text-xs font-mono tracking-widest">
-                            WAITING FOR INPUT
-                        </p>
-                    </div>
-                )}
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: "12px", height: "100%" }}>
+
+      {/* ── Main prediction card ── */}
+      <div
+        key={animKey}
+        className={`glass-card slide-up ${isOk ? "" : ""}`}
+        style={{
+          flex: 1,
+          minHeight: "240px",
+          display: "flex",
+          flexDirection: "column",
+          alignItems: "center",
+          justifyContent: "center",
+          padding: "28px 24px",
+          gap: "10px",
+          position: "relative",
+          overflow: "hidden",
+          background: isOk
+            ? `linear-gradient(135deg, ${bg} 0%, rgba(10,14,22,0.97) 100%)`
+            : "linear-gradient(135deg, rgba(15,22,35,0.95) 0%, rgba(10,14,22,0.98) 100%)",
+          border: isOk
+            ? `1px solid ${color}30`
+            : "1px solid rgba(255,255,255,0.07)",
+          boxShadow: isOk ? `0 0 30px ${color}12` : "none",
+        }}
+      >
+        {/* Radial glow backdrop */}
+        {isOk && (
+          <div style={{
+            position: "absolute", inset: 0, pointerEvents: "none",
+            background: `radial-gradient(ellipse 70% 60% at 50% 40%, ${color}08 0%, transparent 70%)`,
+          }} />
+        )}
+
+        {isOk ? (
+          <>
+            {/* Emoji with confidence ring */}
+            <div style={{ position: "relative", width: "100px", height: "100px", flexShrink: 0 }}>
+              <svg viewBox="0 0 100 100" style={{ position: "absolute", inset: 0, width: "100%", height: "100%", transform: "rotate(-90deg)" }}>
+                <circle cx={RING_C} cy={RING_C} r={RING_R} fill="none" stroke="rgba(255,255,255,0.06)" strokeWidth="3" />
+                <circle
+                  cx={RING_C} cy={RING_C} r={RING_R} fill="none"
+                  stroke={color} strokeWidth="3" strokeLinecap="round"
+                  strokeDasharray={circ} strokeDashoffset={offset}
+                  className="confidence-fill"
+                  style={{ filter: `drop-shadow(0 0 4px ${color}80)` }}
+                />
+              </svg>
+              <div style={{
+                position: "absolute", inset: 0,
+                display: "flex", alignItems: "center", justifyContent: "center",
+                fontSize: "44px",
+                filter: `drop-shadow(0 0 16px ${color}50)`,
+              }}>
+                {emoji}
+              </div>
             </div>
 
-            {/* ── Top-K alternatives ───────────────────────────────────────────── */}
-            <div className="rounded-2xl p-4 glow-border bg-[#0d1520]">
-                <div className="flex items-center justify-between mb-3">
-                    <h3 className="text-xs font-mono text-[#4a5568] tracking-widest uppercase">
-                        Top Predictions
-                    </h3>
-                    {/* TTS Toggle */}
-                    <button
-                        onClick={() => setTtsEnabled((v) => !v)}
-                        className={`flex items-center gap-1.5 text-xs font-mono px-2.5 py-1 rounded-lg transition-colors
-              ${ttsEnabled
-                                ? "text-[#00e5ff] bg-[#00e5ff10] border border-[#00e5ff20]"
-                                : "text-[#4a5568] bg-[#1a2235] border border-[#1e2d45]"
-                            }`}
-                    >
-                        {ttsEnabled ? <Volume2 className="w-3.5 h-3.5" /> : <VolumeX className="w-3.5 h-3.5" />}
-                        TTS {ttsEnabled ? "ON" : "OFF"}
-                    </button>
-                </div>
-
-                <div className="flex flex-col gap-2">
-                    {topK.length > 0 ? topK.map((item, idx) => (
-                        <div key={item.gesture} className="flex items-center gap-3">
-                            <span className="text-[#4a5568] font-mono text-xs w-4">{idx + 1}</span>
-                            <span className="text-base w-6">{item.emoji || "—"}</span>
-                            <span className="text-sm text-white flex-1 truncate">{item.display}</span>
-                            <div className="flex items-center gap-2 w-28">
-                                <div className="flex-1 h-1.5 rounded-full bg-[#0f172a] overflow-hidden">
-                                    <div
-                                        className="h-full rounded-full confidence-fill"
-                                        style={{
-                                            width: `${item.confidence * 100}%`,
-                                            background: idx === 0 ? "#00e5ff" : "#2d4a5e",
-                                        }}
-                                    />
-                                </div>
-                                <span className="text-xs font-mono text-[#4a5568] w-9 text-right">
-                                    {(item.confidence * 100).toFixed(0)}%
-                                </span>
-                            </div>
-                        </div>
-                    )) : (
-                        <p className="text-[#2d3748] text-sm text-center py-2">No predictions yet</p>
-                    )}
-                </div>
-
-                {/* FPS indicator */}
-                <div className="flex justify-end mt-3 pt-2 border-t border-[#1e2d45]">
-                    <span className="text-xs font-mono text-[#2d3748]">
-                        {fps > 0 ? `${fps} fps` : "—"}
-                    </span>
-                </div>
+            {/* Phrase name */}
+            <div style={{ textAlign: "center" }}>
+              <h2 style={{ fontSize: "26px", fontWeight: 700, color: "#fff", lineHeight: 1.1, marginBottom: "6px" }}>
+                {display}
+              </h2>
+              <span style={{
+                display: "inline-block",
+                background: `${color}18`, border: `1px solid ${color}40`,
+                borderRadius: "20px", padding: "2px 10px",
+                fontSize: "11px", fontWeight: 700, color,
+                fontFamily: "JetBrains Mono, monospace", letterSpacing: "0.08em",
+              }}>
+                {label} · {(confidence * 100).toFixed(0)}%
+              </span>
             </div>
+
+            {/* Confidence bar */}
+            <div style={{ width: "100%", padding: "0 4px", marginTop: "4px" }}>
+              <div style={{
+                height: "4px", borderRadius: "2px",
+                background: "rgba(255,255,255,0.06)", overflow: "hidden",
+              }}>
+                <div className="confidence-fill" style={{
+                  height: "100%", borderRadius: "2px",
+                  width: `${confidence * 100}%`,
+                  background: `linear-gradient(90deg, ${color}60, ${color})`,
+                  boxShadow: `0 0 8px ${color}50`,
+                }} />
+              </div>
+            </div>
+
+            {/* Action buttons */}
+            <div style={{ display: "flex", gap: "8px", marginTop: "6px" }}>
+              <button
+                className="btn btn-accent"
+                style={{ fontSize: "12px", padding: "8px 16px" }}
+                onClick={() => onAddToSentence?.(display)}
+              >
+                <Plus size={13} /> Add to sentence
+              </button>
+              <button
+                className="btn btn-signal"
+                style={{ fontSize: "12px", padding: "8px 16px" }}
+                onClick={() => speak(display)}
+                disabled={speaking}
+              >
+                <Volume2 size={13} /> {speaking ? "Speaking…" : "Speak"}
+              </button>
+            </div>
+          </>
+        ) : (
+          <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: "10px", textAlign: "center" }}>
+            <div style={{ fontSize: "52px", opacity: 0.2 }}>🤟</div>
+            <p style={{ color: "#64748b", fontSize: "15px", fontWeight: 500 }}>
+              Waiting for prediction
+            </p>
+            <p className="section-label" style={{ fontSize: "10px" }}>
+              Start camera → sign a phrase → auto-predicts
+            </p>
+          </div>
+        )}
+      </div>
+
+      {/* ── Top-K alternatives ── */}
+      <div className="glass-card" style={{ padding: "16px" }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "12px" }}>
+          <span className="section-label">Top Predictions</span>
+          <button
+            onClick={() => setTtsEnabled((v) => !v)}
+            className={ttsEnabled ? "btn btn-accent" : "btn btn-ghost"}
+            style={{ fontSize: "11px", padding: "5px 10px", gap: "4px" }}
+          >
+            {ttsEnabled ? <Volume2 size={12} /> : <VolumeX size={12} />}
+            TTS {ttsEnabled ? "ON" : "OFF"}
+          </button>
         </div>
-    );
+
+        <div style={{ display: "flex", flexDirection: "column", gap: "7px" }}>
+          {topK.length > 0 ? topK.map((item, idx) => {
+            const { color: ic } = confInfo(item.confidence);
+            return (
+              <div key={item.gesture ?? item.phrase ?? idx} style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+                <span style={{ fontFamily: "JetBrains Mono, monospace", fontSize: "10px", color: "#334155", width: "14px" }}>
+                  {idx + 1}
+                </span>
+                <span style={{ fontSize: "16px", width: "22px", flexShrink: 0 }}>{item.emoji ?? "—"}</span>
+                <span style={{ fontSize: "13px", color: idx === 0 ? "#e2e8f0" : "#94a3b8", flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                  {item.display}
+                </span>
+                <div style={{ display: "flex", alignItems: "center", gap: "6px", width: "100px" }}>
+                  <div style={{ flex: 1, height: "4px", borderRadius: "2px", background: "rgba(255,255,255,0.05)", overflow: "hidden" }}>
+                    <div className="confidence-fill" style={{
+                      height: "100%", borderRadius: "2px",
+                      width: `${item.confidence * 100}%`,
+                      background: idx === 0 ? ic : "rgba(255,255,255,0.12)",
+                      boxShadow: idx === 0 ? `0 0 4px ${ic}60` : "none",
+                    }} />
+                  </div>
+                  <span style={{ fontFamily: "JetBrains Mono, monospace", fontSize: "10px", color: idx === 0 ? ic : "#334155", width: "32px", textAlign: "right" }}>
+                    {(item.confidence * 100).toFixed(0)}%
+                  </span>
+                </div>
+              </div>
+            );
+          }) : (
+            <p style={{ color: "#334155", fontSize: "13px", textAlign: "center", padding: "8px 0", fontFamily: "JetBrains Mono, monospace" }}>
+              — no predictions yet —
+            </p>
+          )}
+        </div>
+      </div>
+    </div>
+  );
 }

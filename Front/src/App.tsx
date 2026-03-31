@@ -1,9 +1,9 @@
 /**
- * App.tsx — Main layout
- * Wires WebCamCapture → SignDisplay, SentenceBuilder, GestureGuide, StatusBar
+ * App.tsx — Redesigned layout
+ * Wider webcam left column + results right (2/5 : 3/5 split)
+ * Immersive dark header with gradient logo
  */
 import { useState, useCallback } from "react";
-import "./App.css";
 
 import WebCamCapture from "./components/WebCamCapture";
 import SignDisplay from "./pages/SignDisplay";
@@ -14,22 +14,15 @@ import StatusBar from "./components/StatusBar";
 const API_BASE = "http://localhost:5000";
 
 export default function App() {
-  const [result, setResult] = useState<Record<string, unknown> | null>(null);
+  const [result, setResult]   = useState<Record<string, unknown> | null>(null);
   const [sentence, setSentence] = useState("");
-
-  // ── Result from webcam predict ─────────────────────────────────────────────
 
   const handleResult = useCallback((data: Record<string, unknown>) => {
     setResult(data);
-    // If predicted successfully, auto-add to sentence
     if (data.status === "ok" && data.display) {
-      setSentence((prev) =>
-        prev ? `${prev} ${data.display}` : (data.display as string)
-      );
+      setSentence((prev) => prev ? `${prev} ${data.display}` : (data.display as string));
     }
   }, []);
-
-  // ── Manual "Add to sentence" from SignDisplay ──────────────────────────────
 
   const handleAddToSentence = useCallback(async (word: string) => {
     setSentence((prev) => (prev ? `${prev} ${word}` : word));
@@ -42,13 +35,9 @@ export default function App() {
     } catch { /* ignore */ }
   }, []);
 
-  // ── Sentence controls ──────────────────────────────────────────────────────
-
   const handleClear = useCallback(async () => {
     setSentence("");
-    try {
-      await fetch(`${API_BASE}/api/sentence/clear`, { method: "POST" });
-    } catch { /* ignore */ }
+    try { await fetch(`${API_BASE}/api/sentence/clear`, { method: "POST" }); } catch { /* ignore */ }
   }, []);
 
   const handleBackspace = useCallback(async () => {
@@ -57,37 +46,74 @@ export default function App() {
       words.pop();
       return words.join(" ");
     });
-    try {
-      await fetch(`${API_BASE}/api/sentence/backspace`, { method: "POST" });
-    } catch { /* ignore */ }
+    try { await fetch(`${API_BASE}/api/sentence/backspace`, { method: "POST" }); } catch { /* ignore */ }
   }, []);
 
-  // ─────────────────────────────────────────────────────────────────────────
-
   return (
-    <div className="min-h-screen bg-[#07090f] text-white">
-      {/* ── Header ──────────────────────────────────────────────────────────── */}
-      <header className="flex items-center justify-between px-6 py-4 border-b border-[#1e2d45]">
-        <div className="flex items-center gap-3">
-          <span className="text-2xl">🤟</span>
+    <div style={{ minHeight: "100vh", background: "var(--ink)", color: "var(--text-primary)", position: "relative", zIndex: 1 }}>
+
+      {/* ── Header ── */}
+      <header style={{
+        display: "flex", alignItems: "center", justifyContent: "space-between",
+        padding: "14px 24px",
+        borderBottom: "1px solid rgba(255,255,255,0.06)",
+        background: "rgba(7,9,15,0.8)",
+        backdropFilter: "blur(12px)",
+        position: "sticky", top: 0, zIndex: 100,
+      }}>
+        <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
+          <div style={{
+            width: "36px", height: "36px", borderRadius: "10px",
+            background: "linear-gradient(135deg, rgba(0,229,255,0.2) 0%, rgba(57,255,20,0.1) 100%)",
+            border: "1px solid rgba(0,229,255,0.25)",
+            display: "flex", alignItems: "center", justifyContent: "center",
+            fontSize: "18px",
+            boxShadow: "0 0 16px rgba(0,229,255,0.15)",
+          }}>
+            🤟
+          </div>
           <div>
-            <h1 className="text-lg font-bold tracking-tight text-white">
+            <h1 style={{
+              fontSize: "17px", fontWeight: 700, letterSpacing: "-0.02em",
+              background: "linear-gradient(90deg, #00e5ff, #39ff14)",
+              WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent",
+              backgroundClip: "text",
+              margin: 0, lineHeight: 1.1,
+            }}>
               Signtelligent
             </h1>
-            <p className="text-xs text-[#4a5568] font-mono">
-              ASL Phrase Recognition
+            <p style={{
+              fontSize: "10px", color: "#334155",
+              fontFamily: "JetBrains Mono, monospace",
+              letterSpacing: "0.08em", margin: 0,
+            }}>
+              ASL PHRASE RECOGNITION
             </p>
           </div>
         </div>
         <StatusBar />
       </header>
 
-      {/* ── Main grid ───────────────────────────────────────────────────────── */}
-      <main className="grid grid-cols-1 lg:grid-cols-3 gap-5 p-5 max-w-7xl mx-auto">
+      {/* ── Main grid ── */}
+      <main style={{
+        display: "grid",
+        gridTemplateColumns: "minmax(300px, 2fr) minmax(280px, 2fr) minmax(240px, 1.5fr)",
+        gap: "16px",
+        padding: "20px 24px",
+        maxWidth: "1400px",
+        margin: "0 auto",
+        minHeight: "calc(100vh - 68px)",
+        alignItems: "start",
+      }}>
 
-        {/* Left column — webcam + sentence */}
-        <div className="lg:col-span-1 flex flex-col gap-5">
-          <WebCamCapture onResult={handleResult} />
+        {/* Left — Webcam + Sentence */}
+        <div style={{ display: "flex", flexDirection: "column", gap: "14px" }}>
+          <div className="glass-card" style={{ padding: "16px" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: "6px", marginBottom: "12px" }}>
+              <span className="section-label">Live Camera</span>
+            </div>
+            <WebCamCapture onResult={handleResult} />
+          </div>
           <SentenceBuilder
             sentence={sentence}
             onClear={handleClear}
@@ -95,14 +121,14 @@ export default function App() {
           />
         </div>
 
-        {/* Middle column — sign display */}
-        <div className="lg:col-span-1 flex flex-col gap-5">
+        {/* Middle — Sign prediction */}
+        <div style={{ display: "flex", flexDirection: "column" }}>
           <SignDisplay result={result} onAddToSentence={handleAddToSentence} />
         </div>
 
-        {/* Right column — phrase guide */}
-        <div className="lg:col-span-1">
-          <GestureGuide activeGesture={result?.phrase as string | undefined} />
+        {/* Right — Phrase guide */}
+        <div style={{ height: "calc(100vh - 108px)", position: "sticky", top: "68px" }}>
+          <GestureGuide activeGesture={result?.phrase as string | undefined ?? result?.gesture as string | undefined} />
         </div>
       </main>
     </div>

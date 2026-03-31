@@ -1,119 +1,147 @@
 /**
- * SentenceBuilder.jsx
- * Accumulates recognized gestures into a sentence with TTS playback,
- * copy, clear, and backspace controls.
+ * SentenceBuilder.tsx — Redesigned
+ * Animated word chips, typewriter cursor, polished controls
  */
-import { useState, useEffect } from "react";
+import { useState } from "react";
 import { Trash2, Volume2, Copy, ChevronLeft, Check } from "lucide-react";
 
-export default function SentenceBuilder({ sentence, onClear, onBackspace }) {
-    const [copied, setCopied] = useState(false);
-    const [speaking, setSpeaking] = useState(false);
+interface Props {
+  sentence: string;
+  onClear: () => void;
+  onBackspace: () => void;
+}
 
-    function speakSentence() {
-        if (!sentence || !("speechSynthesis" in window)) return;
-        window.speechSynthesis.cancel();
-        const utt = new SpeechSynthesisUtterance(sentence);
-        utt.rate = 0.95;
-        utt.onstart = () => setSpeaking(true);
-        utt.onend = () => setSpeaking(false);
-        window.speechSynthesis.speak(utt);
-    }
+export default function SentenceBuilder({ sentence, onClear, onBackspace }: Props) {
+  const [copied, setCopied]   = useState(false);
+  const [speaking, setSpeaking] = useState(false);
 
-    function copySentence() {
-        if (!sentence) return;
-        navigator.clipboard.writeText(sentence).then(() => {
-            setCopied(true);
-            setTimeout(() => setCopied(false), 2000);
-        });
-    }
+  function speakSentence() {
+    if (!sentence || !("speechSynthesis" in window)) return;
+    window.speechSynthesis.cancel();
+    const utt = new SpeechSynthesisUtterance(sentence);
+    utt.rate = 0.95;
+    utt.onstart = () => setSpeaking(true);
+    utt.onend   = () => setSpeaking(false);
+    window.speechSynthesis.speak(utt);
+  }
 
-    const words = sentence ? sentence.split(" ").filter(Boolean) : [];
+  function copySentence() {
+    if (!sentence) return;
+    navigator.clipboard.writeText(sentence).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    });
+  }
 
-    return (
-        <div className="rounded-2xl p-5 glow-border bg-gradient-to-br from-[#0d1520] to-[#0a0b14]">
-            {/* Header */}
-            <div className="flex items-center justify-between mb-4">
-                <div className="flex items-center gap-2">
-                    <div className="w-2 h-2 rounded-full bg-[#00e5ff]" />
-                    <h3 className="text-sm font-semibold text-white tracking-wide">
-                        Sentence Builder
-                    </h3>
-                </div>
-                <span className="text-xs font-mono text-[#4a5568]">
-                    {words.length} word{words.length !== 1 ? "s" : ""}
-                </span>
-            </div>
+  const words = sentence ? sentence.split(" ").filter(Boolean) : [];
 
-            {/* Word chips */}
-            <div
-                className="min-h-[64px] flex flex-wrap gap-2 p-3 rounded-xl bg-[#07090f] border border-[#1e2d45] mb-4 overflow-y-auto"
-                style={{ maxHeight: "120px" }}
-            >
-                {words.length > 0 ? (
-                    words.map((word, idx) => (
-                        <span
-                            key={idx}
-                            className="word-chip inline-flex items-center px-3 py-1 rounded-lg text-sm font-medium
-                bg-[#1a2235] border border-[#00e5ff20] text-[#00e5ff] hover:border-[#00e5ff50] transition-colors"
-                        >
-                            {word}
-                        </span>
-                    ))
-                ) : (
-                    <p className="text-[#2d3748] text-sm m-auto font-mono tracking-wide">
-                        [ start signing to build a sentence ]
-                    </p>
-                )}
-            </div>
+  return (
+    <div className="glass-card" style={{ padding: "16px" }}>
 
-            {/* Controls */}
-            <div className="flex gap-2">
-                {/* Speak */}
-                <button
-                    onClick={speakSentence}
-                    disabled={!sentence || speaking}
-                    className="flex-1 flex items-center justify-center gap-2 py-2.5 rounded-xl
-            bg-[#00e5ff10] border border-[#00e5ff20] text-[#00e5ff] text-sm font-medium
-            hover:bg-[#00e5ff20] disabled:opacity-40 disabled:cursor-not-allowed transition-all"
-                >
-                    <Volume2 className={`w-4 h-4 ${speaking ? "animate-pulse" : ""}`} />
-                    {speaking ? "Speaking…" : "Speak All"}
-                </button>
-
-                {/* Copy */}
-                <button
-                    onClick={copySentence}
-                    disabled={!sentence}
-                    className="flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl
-            bg-[#1a2235] border border-[#1e2d45] text-[#94a3b8] text-sm
-            hover:border-[#4a5568] disabled:opacity-40 transition-colors"
-                >
-                    {copied ? <Check className="w-4 h-4 text-[#39ff14]" /> : <Copy className="w-4 h-4" />}
-                </button>
-
-                {/* Backspace */}
-                <button
-                    onClick={onBackspace}
-                    disabled={!sentence}
-                    className="flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl
-            bg-[#1a2235] border border-[#1e2d45] text-[#94a3b8] text-sm
-            hover:border-[#4a5568] disabled:opacity-40 transition-colors"
-                >
-                    <ChevronLeft className="w-4 h-4" />
-                </button>
-
-                {/* Clear */}
-                <button
-                    onClick={onClear}
-                    disabled={!sentence}
-                    className="flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl
-            bg-[#ff3d5a10] border border-[#ff3d5a20] text-[#ff3d5a] text-sm
-            hover:bg-[#ff3d5a20] disabled:opacity-40 transition-all"
-                >
-                    <Trash2 className="w-4 h-4" />
-                </button>
-            </div>
+      {/* Header */}
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "12px" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: "7px" }}>
+          <div style={{ width: "6px", height: "6px", borderRadius: "50%", background: "#00e5ff", boxShadow: "0 0 6px #00e5ff" }} />
+          <span style={{ fontSize: "13px", fontWeight: 600, color: "#e2e8f0" }}>Sentence Builder</span>
         </div>
-    );
+        <span style={{ fontFamily: "JetBrains Mono, monospace", fontSize: "10px", color: "#334155" }}>
+          {words.length} word{words.length !== 1 ? "s" : ""}
+        </span>
+      </div>
+
+      {/* Word chips area */}
+      <div style={{
+        minHeight: "60px", maxHeight: "110px",
+        display: "flex", flexWrap: "wrap", gap: "6px",
+        padding: "10px 12px",
+        background: "rgba(0,0,0,0.3)",
+        border: "1px solid rgba(255,255,255,0.06)",
+        borderRadius: "10px",
+        overflowY: "auto",
+        marginBottom: "12px",
+        alignContent: words.length ? "flex-start" : "center",
+        justifyContent: words.length ? "flex-start" : "center",
+      }}>
+        {words.length > 0 ? (
+          <>
+            {words.map((word, idx) => (
+              <span
+                key={`${word}-${idx}`}
+                className="word-chip"
+                style={{
+                  display: "inline-flex", alignItems: "center",
+                  padding: "4px 10px",
+                  borderRadius: "7px",
+                  background: "rgba(0,229,255,0.08)",
+                  border: "1px solid rgba(0,229,255,0.2)",
+                  fontSize: "13px", fontWeight: 500, color: "#00e5ff",
+                }}
+              >
+                {word}
+              </span>
+            ))}
+            {/* Typewriter cursor */}
+            <span className="cursor-blink" style={{
+              width: "2px", height: "20px", alignSelf: "center",
+              background: "#00e5ff", borderRadius: "1px",
+              boxShadow: "0 0 6px #00e5ff",
+              display: "inline-block",
+            }} />
+          </>
+        ) : (
+          <p style={{
+            fontFamily: "JetBrains Mono, monospace",
+            fontSize: "11px", color: "#1e2d45", letterSpacing: "0.06em",
+          }}>
+            [ start signing to build a sentence ]
+          </p>
+        )}
+      </div>
+
+      {/* Controls */}
+      <div style={{ display: "flex", gap: "6px" }}>
+        <button
+          className="btn btn-accent"
+          style={{ flex: 1, fontSize: "12px" }}
+          onClick={speakSentence}
+          disabled={!sentence || speaking}
+        >
+          <Volume2 size={13} style={speaking ? { animation: "pulse 1s ease infinite" } : {}} />
+          {speaking ? "Speaking…" : "Speak All"}
+        </button>
+
+        <button
+          className="btn btn-ghost"
+          style={{ padding: "10px 12px" }}
+          onClick={copySentence}
+          disabled={!sentence}
+          title="Copy sentence"
+        >
+          {copied ? <Check size={14} color="#39ff14" /> : <Copy size={14} />}
+        </button>
+
+        <button
+          className="btn btn-ghost"
+          style={{ padding: "10px 12px" }}
+          onClick={onBackspace}
+          disabled={!sentence}
+          title="Remove last word"
+        >
+          <ChevronLeft size={14} />
+        </button>
+
+        <button
+          className="btn btn-danger"
+          style={{ padding: "10px 12px" }}
+          onClick={onClear}
+          disabled={!sentence}
+          title="Clear sentence"
+        >
+          <Trash2 size={14} />
+        </button>
+      </div>
+
+      <style>{`@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.5} }`}</style>
+    </div>
+  );
 }
