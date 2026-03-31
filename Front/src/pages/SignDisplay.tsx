@@ -52,7 +52,9 @@ export default function SignDisplay({
   const emoji      = (result?.emoji ?? "🤟") as string;
   const confidence = (result?.confidence ?? 0) as number;
   const topK       = (result?.top_k ?? []) as TopKItem[];
-  const isOk       = result?.status === "ok" && !!display;
+  // Show result for both 'ok' and 'low_confidence' (so user sees what was predicted)
+  const isOk = (result?.status === "ok" || result?.status === "low_confidence") && !!display;
+  const isLowConf = result?.status === "low_confidence";
 
   const { color, label, bg } = confInfo(confidence);
 
@@ -157,6 +159,11 @@ export default function SignDisplay({
               }}>
                 {label} · {(confidence * 100).toFixed(0)}%
               </span>
+              {isLowConf && (
+                <div style={{ marginTop: "4px", fontSize: "11px", color: "#ffb800" }}>
+                  ⚠ Low confidence — try signing more clearly
+                </div>
+              )}
             </div>
 
             {/* Confidence bar */}

@@ -12,7 +12,7 @@ To add a new phrase:
 Each entry:
   id          — internal key (snake_case, no spaces)
   display     — human-readable sentence shown in the UI
-  hint        — which gestures to sign, in order
+  hint        — brief description of the ASL motion (UI only, not used for training)
   emoji       — decorative icon for the UI
   category    — groups phrases in the reference panel
 """
@@ -21,86 +21,86 @@ PHRASES = [
     {
         "id":       "hello_how_are_you",
         "display":  "Hello, how are you?",
-        "hint":     "hello → ok → ?",
+        "hint":     "Wave hand, then open-palm question",
         "emoji":    "👋",
-        "category": "greeting",
+        "category": "Greeting",
     },
     {
         "id":       "thank_you",
         "display":  "Thank you.",
-        "hint":     "thank_you",
+        "hint":     "Flat hand from chin, move forward",
         "emoji":    "🙏",
-        "category": "greeting",
+        "category": "Greeting",
     },
     {
         "id":       "i_love_you",
         "display":  "I love you.",
-        "hint":     "i_love_you",
+        "hint":     "Pinky, index & thumb extended",
         "emoji":    "🤟",
-        "category": "expression",
+        "category": "Expression",
     },
     {
         "id":       "yes_please",
         "display":  "Yes, please.",
-        "hint":     "yes → peace",
+        "hint":     "Fist nod, then rub palms together",
         "emoji":    "✅",
-        "category": "response",
+        "category": "Response",
     },
     {
         "id":       "no_thank_you",
         "display":  "No, thank you.",
-        "hint":     "no → thank_you",
+        "hint":     "Index & middle tap thumb, then thank you",
         "emoji":    "❌",
-        "category": "response",
+        "category": "Response",
     },
     {
         "id":       "please_stop",
         "display":  "Please stop.",
-        "hint":     "peace → stop",
+        "hint":     "Rub chest, then karate-chop flat hand",
         "emoji":    "✋",
-        "category": "action",
+        "category": "Action",
     },
     {
         "id":       "good_morning",
         "display":  "Good morning.",
-        "hint":     "thumbs_up → hello",
+        "hint":     "Hand from chin outward, then arm rises",
         "emoji":    "🌅",
-        "category": "greeting",
+        "category": "Greeting",
     },
     {
         "id":       "nice_to_meet_you",
         "display":  "Nice to meet you.",
-        "hint":     "ok → hello",
+        "hint":     "Flat hands slide together, then point",
         "emoji":    "🤝",
-        "category": "greeting",
+        "category": "Greeting",
     },
     {
         "id":       "i_am_fine",
         "display":  "I am fine.",
-        "hint":     "number_1 → thumbs_up",
+        "hint":     "Point to self, then thumbs up",
         "emoji":    "😊",
-        "category": "response",
+        "category": "Response",
     },
     {
         "id":       "help_me_please",
         "display":  "Help me, please.",
-        "hint":     "stop → peace → number_1",
+        "hint":     "Fist on open palm, lift upward",
         "emoji":    "🆘",
-        "category": "action",
+        "category": "Action",
     },
     {
         "id":       "you_are_welcome",
         "display":  "You are welcome.",
-        "hint":     "peace → ok → thumbs_up",
+        "hint":     "Point out, then bow flat hand inward",
         "emoji":    "🫱",
-        "category": "response",
+        "category": "Response",
     },
     {
         "id":       "see_you_later",
         "display":  "See you later.",
-        "hint":     "hello → thumbs_up",
+        "hint":     "V-sign from eyes, point out, wave",
         "emoji":    "👋",
-        "category": "greeting",
+        "category": "Greeting",
     },
 ]
 

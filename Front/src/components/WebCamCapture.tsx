@@ -1,17 +1,15 @@
 /**
  * WebCamCapture.tsx — Redesigned
- * - Circular SVG progress ring around the webcam
- * - Auto-predict toggle: fires predict when buffer hits 100%
- * - Step-by-step guide overlay when camera is off
- * - Recording pulse indicator
- * - Analyzing overlay during prediction
+ * KEY FIX: Frames only push during an explicit "Record" window.
+ * The user clicks Record, signs for ~5 sec, auto-predict fires.
+ * This prevents the buffer filling with idle/random frames.
  */
 
 import { useEffect, useRef, useState, useCallback } from "react";
-import { Camera, CameraOff, Zap, RotateCcw, Loader2, Wand2 } from "lucide-react";
+import { Camera, CameraOff, Zap, RotateCcw, Loader2, Wand2, Radio } from "lucide-react";
 
 const API_BASE = "http://localhost:5000";
-const PUSH_INTERVAL_MS = 150; // ~6-7 fps to backend
+const PUSH_INTERVAL_MS = 150; // ~6-7 fps to backend → 30 frames in ~4.5 s
 
 interface WebCamCaptureProps {
   onResult: (result: Record<string, unknown>) => void;
@@ -23,6 +21,7 @@ export default function WebCamCapture({ onResult }: WebCamCaptureProps) {
   const pushTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const [isCapturing, setIsCapturing] = useState(false);
+  const [isRecording, setIsRecording] = useState(false); // actively pushing frames
   const [bufferFill, setBufferFill] = useState(0);
   const [frames, setFrames] = useState(0);
   const [seqLen, setSeqLen] = useState(30);
@@ -104,29 +103,30 @@ export default function WebCamCapture({ onResult }: WebCamCaptureProps) {
     } catch { /* ignore */ }
   }, [captureFrame]);
 
+  // Push frames ONLY during active recording window
   useEffect(() => {
-    if (isCapturing) {
+    if (isRecording) {
       pushTimerRef.current = setInterval(pushFrame, PUSH_INTERVAL_MS);
     } else {
       if (pushTimerRef.current) clearInterval(pushTimerRef.current);
     }
     return () => { if (pushTimerRef.current) clearInterval(pushTimerRef.current); };
-  }, [isCapturing, pushFrame]);
+  }, [isRecording, pushFrame]);
 
   useEffect(() => () => stopCamera(), [stopCamera]);
 
-  // ── Auto-predict when buffer is full ────────────────────────────────────────
-
+  // Auto-predict when buffer is full (only during active recording)
   useEffect(() => {
-    if (autoPredict && bufferFill >= 1.0 && isCapturing && !isPredicting && !justPredicted) {
+    if (autoPredict && bufferFill >= 1.0 && isRecording && !isPredicting && !justPredicted) {
       handlePredict();
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [bufferFill, autoPredict, isCapturing, isPredicting, justPredicted]);
+  }, [bufferFill, autoPredict, isRecording, isPredicting, justPredicted]);
 
   // ── Predict ────────────────────────────────────────────────────────────────
 
   const handlePredict = async () => {
+    setIsRecording(false); // stop pushing new frames
     setIsPredicting(true);
     setJustPredicted(true);
     try {
@@ -134,25 +134,33 @@ export default function WebCamCapture({ onResult }: WebCamCaptureProps) {
       if (res.ok) {
         const data = await res.json();
         onResult(data);
-        if (data.status === "ok") {
-          await fetch(`${API_BASE}/api/sequence/reset`, { method: "POST" });
-          setBufferFill(0);
-          setFrames(0);
-        }
+        // Always reset buffer after predict (ok or low_confidence)
+        await fetch(`${API_BASE}/api/sequence/reset`, { method: "POST" });
+        setBufferFill(0);
+        setFrames(0);
       }
     } catch {
       console.error("Predict failed");
     } finally {
       setIsPredicting(false);
-      // Debounce: don't auto-predict again for 1.5s
-      setTimeout(() => setJustPredicted(false), 1500);
+      setTimeout(() => setJustPredicted(false), 3000);
     }
   };
 
   const handleReset = async () => {
+    setIsRecording(false);
     try { await fetch(`${API_BASE}/api/sequence/reset`, { method: "POST" }); } catch { /* ignore */ }
     setBufferFill(0);
     setFrames(0);
+  };
+
+  // Start a fresh recording window
+  const handleStartRecording = async () => {
+    // Reset buffer first so we start clean
+    try { await fetch(`${API_BASE}/api/sequence/reset`, { method: "POST" }); } catch { /* ignore */ }
+    setBufferFill(0);
+    setFrames(0);
+    setIsRecording(true);
   };
 
   // ─────────────────────────────────────────────────────────────────────────
@@ -240,13 +248,27 @@ export default function WebCamCapture({ onResult }: WebCamCaptureProps) {
               </div>
             )}
 
-            {/* Buffer HUD */}
-            {isCapturing && !isPredicting && (
+            {/* Idle overlay: prompt to record */}
+            {isCapturing && !isRecording && !isPredicting && bufferFill === 0 && (
+              <div style={{
+                position: "absolute", inset: 0,
+                display: "flex", flexDirection: "column",
+                alignItems: "center", justifyContent: "center",
+                gap: "8px",
+                background: "rgba(7,9,15,0.55)",
+                backdropFilter: "blur(2px)",
+              }}>
+                <p style={{ color: "#94a3b8", fontSize: "13px", fontWeight: 500 }}>Camera ready</p>
+                <p style={{ color: "#334155", fontSize: "11px", fontFamily: "JetBrains Mono, monospace" }}>Press ● Record then sign a phrase</p>
+              </div>
+            )}
+
+            {/* Buffer HUD (only during recording) */}
+            {isRecording && !isPredicting && (
               <div style={{
                 position: "absolute", top: "10px", left: "10px", right: "10px",
                 display: "flex", alignItems: "center", gap: "8px",
               }}>
-                {/* Recording dot */}
                 <div className="recording-dot" />
                 <div style={{ flex: 1, height: "3px", borderRadius: "2px", background: "rgba(0,0,0,0.5)", overflow: "hidden" }}>
                   <div style={{
@@ -264,7 +286,7 @@ export default function WebCamCapture({ onResult }: WebCamCaptureProps) {
             )}
 
             {/* Ready badge */}
-            {isCapturing && bufferFill >= 1.0 && !isPredicting && (
+            {isRecording && bufferFill >= 1.0 && !isPredicting && (
               <div style={{
                 position: "absolute", bottom: "10px", left: "50%", transform: "translateX(-50%)",
                 background: "rgba(57,255,20,0.15)", border: "1px solid rgba(57,255,20,0.4)",
@@ -278,8 +300,8 @@ export default function WebCamCapture({ onResult }: WebCamCaptureProps) {
             )}
           </div>
 
-          {/* SVG circular progress ring */}
-          {isCapturing && (
+          {/* SVG circular progress ring — shown only during recording */}
+          {isRecording && (
             <svg
               viewBox="0 0 100 100"
               style={{
@@ -288,14 +310,12 @@ export default function WebCamCapture({ onResult }: WebCamCaptureProps) {
                 pointerEvents: "none",
               }}
             >
-              {/* Track */}
               <circle
                 cx={RING_C} cy={RING_C} r={RING_R}
                 fill="none"
                 stroke="rgba(255,255,255,0.06)"
                 strokeWidth="2.5"
               />
-              {/* Progress */}
               <circle
                 cx={RING_C} cy={RING_C} r={RING_R}
                 fill="none"
@@ -359,39 +379,44 @@ export default function WebCamCapture({ onResult }: WebCamCaptureProps) {
 
         {/* Action buttons */}
         <div style={{ display: "flex", gap: "8px" }}>
-          {/* Start / Stop */}
+          {/* Start / Stop camera */}
           <button
             id="camera-toggle-btn"
             className={isCapturing ? "btn btn-danger" : "btn btn-accent"}
-            style={{ flex: 1 }}
+            style={{ padding: "10px 12px" }}
             onClick={isCapturing ? stopCamera : startCamera}
+            title={isCapturing ? "Stop camera" : "Start camera"}
           >
-            {isCapturing ? <><CameraOff size={14} /> Stop</> : <><Camera size={14} /> Start Camera</>}
+            {isCapturing ? <CameraOff size={14} /> : <Camera size={14} />}
+          </button>
+
+          {/* Record button — the main action */}
+          <button
+            id="record-btn"
+            className={isRecording ? "btn btn-danger" : "btn btn-accent"}
+            style={{ flex: 1, fontWeight: 700 }}
+            onClick={isRecording ? handleReset : handleStartRecording}
+            disabled={!isCapturing || isPredicting}
+          >
+            {isRecording
+              ? <><Radio size={14} style={{ animation: "pulse 1s ease infinite" }} /> Recording…</>
+              : <><Radio size={14} /> Record Sign</>
+            }
           </button>
 
           {/* Manual predict */}
           <button
             id="predict-btn"
             className="btn btn-signal"
-            style={{ flex: 1 }}
+            style={{ padding: "10px 12px" }}
             onClick={handlePredict}
             disabled={!isCapturing || bufferFill < 0.5 || isPredicting}
+            title="Predict now"
           >
             {isPredicting
-              ? <><Loader2 size={14} style={{ animation: "spin 1s linear infinite" }} /> Predicting…</>
-              : <><Zap size={14} /> Predict</>
+              ? <Loader2 size={14} style={{ animation: "spin 1s linear infinite" }} />
+              : <Zap size={14} />
             }
-          </button>
-
-          {/* Reset */}
-          <button
-            className="btn btn-ghost"
-            style={{ padding: "10px 12px" }}
-            onClick={handleReset}
-            disabled={!isCapturing}
-            title="Reset buffer"
-          >
-            <RotateCcw size={14} />
           </button>
         </div>
       </div>

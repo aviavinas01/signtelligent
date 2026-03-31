@@ -22,6 +22,8 @@ Run:
 """
 
 import os
+os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"   # suppress TF info/warning/SSE messages
+os.environ["TF_ENABLE_ONEDNN_OPTS"] = "0"  # suppress oneDNN rounding warnings
 import cv2
 import json
 import time
@@ -354,6 +356,10 @@ def clear_sentence():
 # ─── Entry point ────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
+    # Quiet per-request access logs (health pings every 8s are noisy)
+    import logging
+    logging.getLogger("werkzeug").setLevel(logging.ERROR)
+
     print("\n" + "="*60)
     print("  SignSense Backend  v2  (Frame + LSTM)")
     print("="*60)
