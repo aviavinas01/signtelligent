@@ -14,7 +14,7 @@ import StatusBar from "./components/StatusBar";
 const API_BASE = "http://localhost:5000";
 
 export default function App() {
-  const [result, setResult]   = useState<Record<string, unknown> | null>(null);
+  const [result, setResult] = useState<Record<string, unknown> | null>(null);
   const [sentence, setSentence] = useState("");
 
   const handleResult = useCallback((data: Record<string, unknown>) => {
@@ -70,7 +70,7 @@ export default function App() {
             fontSize: "18px",
             boxShadow: "0 0 16px rgba(0,229,255,0.15)",
           }}>
-            🤟
+            〥
           </div>
           <div>
             <h1 style={{

@@ -31,7 +31,7 @@ MODEL_DIR   = os.path.join(os.path.dirname(__file__), "models")
 MODEL_PATH  = os.path.join(MODEL_DIR, "lstm_model.keras")
 CONFIG_PATH = os.path.join(MODEL_DIR, "lstm_config.json")
 
-CONFIDENCE_THRESHOLD = 0.60   # minimum softmax score to accept a prediction
+CONFIDENCE_THRESHOLD = 0.72   # raised from 0.60 — only accept confident predictions
 
 
 class SequencePredictor:
@@ -158,18 +158,9 @@ class SequencePredictor:
 
     def predict(self) -> dict:
         """
-        Run the LSTM over the current buffer and return a prediction dict.
-
-        Returns:
-            {
-                "phrase":      "i_love_you",
-                "display":     "I love you.",
-                "emoji":       "🤟",
-                "confidence":  0.94,
-                "top_k":       [...],
-                "buffer_fill": 1.0,
-                "status":      "ok" | "low_confidence" | "buffer_not_full"
-            }
+        Run the LSTM over the current buffer using multi-shot voting.
+        Predicts on 3 overlapping windows and takes the majority-vote winner
+        to reduce sensitivity to exact timing of the recording window.
         """
         fill = self.buffer_fill()
 
@@ -182,23 +173,36 @@ class SequencePredictor:
                 "top_k":       [],
                 "buffer_fill": fill,
                 "status":      "buffer_not_full",
-                "message":     f"Only {fill*100:.0f}% of frames captured. Sign more slowly or press again.",
+                "message":     f"Only {fill*100:.0f}% of frames captured. Keep signing.",
             }
 
-        # Pad / crop to exact seq_len
-        seq = list(self._buffer)
-        while len(seq) < self.seq_len:
-            seq.insert(0, [0.0] * self.n_features)
-        seq = seq[-self.seq_len:]
+        buf = list(self._buffer)
 
-        X     = np.array(seq, dtype=np.float32)[np.newaxis]   # (1, seq_len, 63)
-        proba = self._model.predict(X, verbose=0)[0]           # (num_phrases,)
+        # ── Multi-shot voting: 3 windows with 3-frame shifts ──────────────────
+        N_SHOTS = 3
+        shot_probas = []
+        for shift in range(N_SHOTS):
+            offset = shift * 3
+            if len(buf) < self.seq_len + offset:
+                snip = buf[-self.seq_len:]
+            else:
+                snip = buf[-(self.seq_len + offset): len(buf) - offset if offset > 0 else None]
+            # Pad if needed
+            while len(snip) < self.seq_len:
+                snip.insert(0, [0.0] * self.n_features)
+            snip = snip[-self.seq_len:]
+            X = np.array(snip, dtype=np.float32)[np.newaxis]
+            proba = self._model.predict(X, verbose=0)[0]
+            shot_probas.append(proba)
 
-        top_idx   = int(np.argmax(proba))
-        confidence = float(proba[top_idx])
+        # Average the softmax probabilities across shots (more stable than voting)
+        avg_proba = np.mean(shot_probas, axis=0)
+
+        top_idx    = int(np.argmax(avg_proba))
+        confidence = float(avg_proba[top_idx])
 
         # Build top-3 list
-        top3_idx = np.argsort(proba)[::-1][:3]
+        top3_idx = np.argsort(avg_proba)[::-1][:3]
         top_k = []
         for idx in top3_idx:
             meta = self._meta.get(idx, {})
@@ -206,7 +210,7 @@ class SequencePredictor:
                 "phrase":     self.phrase_ids[idx],
                 "display":    meta.get("display", ""),
                 "emoji":      meta.get("emoji", ""),
-                "confidence": float(proba[idx]),
+                "confidence": float(avg_proba[idx]),
             })
 
         meta = self._meta.get(top_idx, {})
@@ -220,7 +224,7 @@ class SequencePredictor:
             "buffer_fill": fill,
             "status":      "ok" if confidence >= CONFIDENCE_THRESHOLD else "low_confidence",
             "message":     "" if confidence >= CONFIDENCE_THRESHOLD
-                           else f"Low confidence ({confidence*100:.0f}%). Try again more clearly.",
+                           else f"Low confidence ({confidence*100:.0f}%). Try signing more clearly.",
         }
         self._last_result = result
         return result

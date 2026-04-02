@@ -155,13 +155,17 @@ def build_model(seq_len: int, n_features: int = N_FEATURES,
     """
     inp = keras.Input(shape=(seq_len, n_features), name="landmarks")
 
-    x = layers.LSTM(256, return_sequences=True, name="lstm_1")(inp)
+    x = layers.LSTM(256, return_sequences=True,
+                    recurrent_dropout=0.20,     # prevents memorizing exact sequences
+                    name="lstm_1")(inp)
     x = layers.BatchNormalization()(x)
-    x = layers.Dropout(0.40)(x)
+    x = layers.Dropout(0.50)(x)                 # increased from 0.40
 
-    x = layers.LSTM(128, return_sequences=False, name="lstm_2")(x)
+    x = layers.LSTM(128, return_sequences=False,
+                    recurrent_dropout=0.20,     # prevents memorizing exact sequences
+                    name="lstm_2")(x)
     x = layers.BatchNormalization()(x)
-    x = layers.Dropout(0.40)(x)
+    x = layers.Dropout(0.50)(x)                 # increased from 0.40
 
     x = layers.Dense(128, activation="relu",
                      kernel_regularizer=regularizers.l2(1e-4),

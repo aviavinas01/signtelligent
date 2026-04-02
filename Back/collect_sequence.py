@@ -28,7 +28,7 @@ from phrases import PHRASES, NUM_PHRASES
 
 # ─── Configuration ─────────────────────────────────────────────────────────────
 SEQUENCE_LENGTH     = 30       # frames per sample  (~1.5 s at 20 fps)
-SAMPLES_PER_PHRASE  = 80       # target samples per phrase
+SAMPLES_PER_PHRASE  = 160      # target samples per phrase
 DATA_DIR            = "sequence_data"
 GAP_BETWEEN_SAMPLES = 3.8      # seconds pause between auto-recorded samples
 
