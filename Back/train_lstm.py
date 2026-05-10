@@ -31,7 +31,7 @@ from tensorflow import keras
 from tensorflow.keras import layers, callbacks, regularizers
 from sklearn.model_selection import train_test_split
 from sklearn.utils.class_weight import compute_class_weight
-from phrases import PHRASES, NUM_PHRASES, ID_TO_IDX
+from phrases import PHRASES, NUM_PHRASES, ID_TO_IDX, PHRASE_IDS
 
 DATA_DIR    = "sequence_data"
 MODEL_DIR   = "models"
@@ -46,30 +46,33 @@ os.makedirs(MODEL_DIR, exist_ok=True)
 
 # ─── Data loading ───────────────────────────────────────────────────────────────
 
-def load_sequences(seq_len: int) -> tuple[np.ndarray, np.ndarray]:
+def load_sequences(seq_len: int) -> tuple[np.ndarray, np.ndarray, list, dict]:
     """
     Walk sequence_data/<phrase_id>/*.npy and load all samples.
     Sequences shorter than seq_len are zero-padded;
     longer ones are centre-cropped.
-    Returns X of shape (N, seq_len, 132) and y of shape (N,).
+
+    Returns:
+        X         — shape (N, seq_len, 132)
+        y         — shape (N,) with contiguous labels 0..K-1
+        present_ids — list of phrase IDs in label order
+        remap     — dict mapping original phrase index → new contiguous label
     """
-    X_list, y_list = [], []
+    X_list, y_raw = [], []
 
     for phrase in PHRASES:
         pid = phrase["id"]
         d   = Path(DATA_DIR) / pid
         if not d.is_dir():
-            print(f"  [skip] No data for '{pid}'")
             continue
 
         files = sorted(d.glob("*.npy"))
         if not files:
-            print(f"  [skip] Empty dir for '{pid}'")
             continue
 
-        label = ID_TO_IDX[pid]
+        orig_label = ID_TO_IDX[pid]
         for f in files:
-            seq = np.load(f).astype(np.float32)   # (T, 126)
+            seq = np.load(f).astype(np.float32)
 
             # Normalise length to seq_len
             T = seq.shape[0]
@@ -81,16 +84,30 @@ def load_sequences(seq_len: int) -> tuple[np.ndarray, np.ndarray]:
                 seq   = seq[start : start + seq_len]
 
             X_list.append(seq)
-            y_list.append(label)
+            y_raw.append(orig_label)
 
     if not X_list:
         print("\n[ERROR] No sequence data found.")
         print("  Run  python collect_sequences.py  first (or use --demo).\n")
         sys.exit(1)
 
-    X = np.array(X_list, dtype=np.float32)   # (N, seq_len, 126)
-    y = np.array(y_list,  dtype=np.int32)     # (N,)
-    return X, y
+    # ── Remap labels to be contiguous 0..K-1 ───────────────────────────────────
+    # This is critical: if phrases.py has 100 entries but only 19 have data,
+    # we must NOT build a 100-class model — only build a K-class model.
+    present_orig = sorted(set(y_raw))
+    remap        = {orig: new for new, orig in enumerate(present_orig)}
+    present_ids  = [PHRASES[i]["id"] for i in present_orig]
+
+    y_remapped = np.array([remap[label] for label in y_raw], dtype=np.int32)
+    X = np.array(X_list, dtype=np.float32)
+
+    print(f"  [Load] Phrases with data : {len(present_ids)} / {NUM_PHRASES} defined")
+    for orig, new in remap.items():
+        pid    = PHRASES[orig]["id"]
+        count  = int(np.sum(y_remapped == new))
+        print(f"         [{new:>3}] {pid:<30} {count:>4} samples")
+
+    return X, y_remapped, present_ids, remap
 
 
 # ─── Data augmentation ──────────────────────────────────────────────────────────
@@ -191,19 +208,19 @@ def train(seq_len: int = 30, epochs: int = 80, batch_size: int = 32,
     if demo:
         print("\n[DEMO] Generating synthetic sequences …")
         X, y = _synthetic_data(seq_len)
+        present_ids = [p["id"] for p in PHRASES[:12]]   # _synthetic_data uses first 12
+        n_classes   = 12
     else:
         print("\n[Load] Reading .npy sequence files …")
-        X, y = load_sequences(seq_len)
+        X, y, present_ids, _remap = load_sequences(seq_len)
+        n_classes = len(present_ids)   # ← ONLY phrases with actual data
 
     print(f"[Load] Raw dataset  : X={X.shape}  y={y.shape}")
+    print(f"[Load] Output classes: {n_classes}  (phrases with training data)")
 
-    # Class distribution
-    unique, counts = np.unique(y, return_counts=True)
-    print("[Load] Samples per phrase:")
-    for idx, cnt in zip(unique, counts):
-        phrase = PHRASES[idx]["display"]
-        bar    = "█" * (cnt // 2)
-        print(f"       {phrase:<30} {cnt:>3}  {bar}")
+    if n_classes != NUM_PHRASES:
+        print(f"[NOTE] phrases.py defines {NUM_PHRASES} phrases but only "
+              f"{n_classes} have data. Model will have {n_classes} outputs.")
 
     # ── Augment ─────────────────────────────────────────────────────────────────
     if augment and not demo:
@@ -223,7 +240,7 @@ def train(seq_len: int = 30, epochs: int = 80, batch_size: int = 32,
     class_weight = dict(zip(classes.tolist(), cw.tolist()))
 
     # ── Build model ─────────────────────────────────────────────────────────────
-    model = build_model(seq_len=seq_len, n_features=N_FEATURES, n_classes=NUM_PHRASES)
+    model = build_model(seq_len=seq_len, n_features=N_FEATURES, n_classes=n_classes)
     model.summary()
 
     # ── Compile ─────────────────────────────────────────────────────────────────
@@ -279,12 +296,12 @@ def train(seq_len: int = 30, epochs: int = 80, batch_size: int = 32,
     # Per-class accuracy
     y_pred  = np.argmax(best_model.predict(X_val, verbose=0), axis=1)
     print("\n[Eval] Per-phrase accuracy:")
-    for idx in range(NUM_PHRASES):
-        mask   = y_val == idx
+    for new_idx, pid in enumerate(present_ids):
+        mask  = y_val == new_idx
         if mask.sum() == 0:
             continue
-        p_acc  = (y_pred[mask] == idx).mean() * 100
-        phrase = PHRASES[idx]["display"]
+        p_acc  = (y_pred[mask] == new_idx).mean() * 100
+        phrase = PHRASES[PHRASE_IDS.index(pid)]["display"]
         bar    = "█" * int(p_acc // 5)
         print(f"       {phrase:<30} {p_acc:5.1f}%  {bar}")
 
@@ -292,9 +309,9 @@ def train(seq_len: int = 30, epochs: int = 80, batch_size: int = 32,
     config = {
         "seq_len":     seq_len,
         "n_features":  N_FEATURES,
-        "num_phrases": NUM_PHRASES,
+        "num_phrases": n_classes,       # ← actual trained class count
         "val_accuracy": round(val_acc, 4),
-        "phrase_ids":  [p["id"] for p in PHRASES],
+        "phrase_ids":  present_ids,     # ← only IDs the model knows about
     }
     with open(CONFIG_PATH, "w") as f:
         json.dump(config, f, indent=2)
@@ -316,7 +333,9 @@ def _synthetic_data(seq_len: int):
     """Generate clearly separable synthetic sequences for smoke-testing."""
     rng = np.random.default_rng(0)
     X, y = [], []
-    for i, phrase in enumerate(PHRASES):
+    # Demo uses first 12 phrases only to keep it fast
+    demo_phrases = PHRASES[:12]
+    for i, phrase in enumerate(demo_phrases):
         base = rng.uniform(-0.2, 0.2, (seq_len, N_FEATURES))
         # Each phrase class gets a unique temporal "slope" signature
         trend = np.linspace(0, 0.15 * i, seq_len)[:, None]

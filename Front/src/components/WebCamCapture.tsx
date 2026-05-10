@@ -9,7 +9,11 @@ import { useEffect, useRef, useState, useCallback } from "react";
 import { Camera, CameraOff, Zap, RotateCcw, Loader2, Wand2, Radio } from "lucide-react";
 
 const API_BASE = "http://localhost:5000";
-const PUSH_INTERVAL_MS = 150; // ~6-7 fps to backend → 30 frames in ~4.5 s
+// Push at ~12 fps so 30 frames ≈ 2.5 s — closely matching the ~15 fps
+// webcam rate used during collect_sequence.py training data collection.
+// At 150 ms (6.7 fps) the temporal pattern was stretched 2-3× vs training,
+// causing the LSTM to consistently misclassify every sign.
+const PUSH_INTERVAL_MS = 80;
 
 interface WebCamCaptureProps {
   onResult: (result: Record<string, unknown>) => void;

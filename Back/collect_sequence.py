@@ -17,10 +17,12 @@ Usage:
     python collect_sequences.py --seq-len 45   # longer window
 """
 
+import os
+os.environ["OPENCV_LOG_LEVEL"]     = "ERROR"  # suppress packet timestamp mismatch noise
+os.environ["OPENCV_VIDEOIO_DEBUG"] = "0"       # disable verbose videoio debug logs
 import cv2
 import mediapipe as mp
 import numpy as np
-import os
 import time
 import argparse
 from collections import deque
@@ -40,7 +42,7 @@ mp_styles   = mp.solutions.drawing_styles
 holistic = mp_holistic.Holistic(
     static_image_mode=False,
     min_detection_confidence=0.7,
-    min_tracking_confidence=0.5,
+    min_tracking_confidence=0.5, 
 )
 
 os.makedirs(DATA_DIR, exist_ok=True)

@@ -24,6 +24,8 @@ Run:
 import os
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"   # suppress TF info/warning/SSE messages
 os.environ["TF_ENABLE_ONEDNN_OPTS"] = "0"  # suppress oneDNN rounding warnings
+os.environ["OPENCV_LOG_LEVEL"]       = "ERROR" # suppress packet timestamp mismatch noise
+os.environ["OPENCV_VIDEOIO_DEBUG"]   = "0"     # disable verbose videoio debug logs
 import cv2
 import json
 import time

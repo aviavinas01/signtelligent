@@ -1,8 +1,8 @@
 {
   "seq_len": 30,
   "n_features": 132,
-  "num_phrases": 12,
-  "val_accuracy": 1.0,
+  "num_phrases": 19,
+  "val_accuracy": 0.9989,
   "phrase_ids": [
     "hello_how_are_you",
     "thank_you",
@@ -15,6 +15,13 @@
     "i_am_fine",
     "help_me_please",
     "you_are_welcome",
-    "see_you_later"
+    "see_you_later",
+    "what",
+    "where",
+    "when",
+    "who",
+    "why",
+    "how",
+    "what_time_is_it"
   ]
 }

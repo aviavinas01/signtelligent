@@ -16,6 +16,8 @@ frame-level GesturePredictor — they share no state.
 """
 
 import os
+os.environ["OPENCV_LOG_LEVEL"]     = "ERROR"  # suppress packet timestamp mismatch noise
+os.environ["OPENCV_VIDEOIO_DEBUG"] = "0"       # disable verbose videoio debug logs
 import json
 import time
 import base64
