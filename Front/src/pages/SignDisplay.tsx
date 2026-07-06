@@ -202,7 +202,7 @@ export default function SignDisplay({
           </>
         ) : (
           <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: "10px", textAlign: "center" }}>
-            <div style={{ fontSize: "52px", opacity: 0.2 }}>🤟</div>
+            <div className="float" style={{ fontSize: "52px", opacity: 0.25 }}>🤟</div>
             <p style={{ color: "#64748b", fontSize: "15px", fontWeight: 500 }}>
               Waiting for prediction
             </p>

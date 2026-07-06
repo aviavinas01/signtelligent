@@ -1,432 +1,277 @@
 /**
- * WebCamCapture.tsx — Redesigned
- * KEY FIX: Frames only push during an explicit "Record" window.
- * The user clicks Record, signs for ~5 sec, auto-predict fires.
- * This prevents the buffer filling with idle/random frames.
+ * WebCamCapture.tsx  (v3)
+ * =======================
+ * Manages webcam access, captures frames, posts to /api/predict (frame model),
+ * AND exposes its canvas ref so the sequence panel can read frames for the LSTM.
+ *
+ * v3 changes:
+ *   - Self-contained Start / Stop controls (no longer depends on a parent
+ *     `active` prop that was never passed — the camera can now actually start).
+ *   - Mirrored preview matches the mirrored captured frame (natural selfie view).
+ *   - Typed error handling; null-safe onResult.
  */
 
-import { useEffect, useRef, useState, useCallback } from "react";
-import { Camera, CameraOff, Zap, RotateCcw, Loader2, Wand2, Radio } from "lucide-react";
+import {
+  useEffect,
+  useRef,
+  useState,
+  useCallback,
+  forwardRef,
+  useImperativeHandle,
+} from "react";
+import { Camera, CameraOff, Loader2, Power } from "lucide-react";
 
 const API_BASE = "http://localhost:5000";
-// Push at ~12 fps so 30 frames ≈ 2.5 s — closely matching the ~15 fps
-// webcam rate used during collect_sequence.py training data collection.
-// At 150 ms (6.7 fps) the temporal pattern was stretched 2-3× vs training,
-// causing the LSTM to consistently misclassify every sign.
-const PUSH_INTERVAL_MS = 80;
+const CAPTURE_FPS = 20;
+const CAPTURE_INTERVAL = Math.round(1000 / CAPTURE_FPS);
 
-interface WebCamCaptureProps {
-  onResult: (result: Record<string, unknown>) => void;
+type CamState = "idle" | "loading" | "active" | "error";
+
+interface WebcamCaptureProps {
+  onResult?: (data: Record<string, unknown> | null) => void;
+  /** Optional external control. When provided, syncs camera on/off with it. */
+  active?: boolean;
 }
 
-export default function WebCamCapture({ onResult }: WebCamCaptureProps) {
-  const videoRef = useRef<HTMLVideoElement>(null);
-  const canvasRef = useRef<HTMLCanvasElement>(null);
-  const pushTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+export interface WebcamCaptureHandle {
+  readonly canvas: HTMLCanvasElement | null;
+  start: () => void;
+  stop: () => void;
+}
 
-  const [isCapturing, setIsCapturing] = useState(false);
-  const [isRecording, setIsRecording] = useState(false); // actively pushing frames
-  const [bufferFill, setBufferFill] = useState(0);
-  const [frames, setFrames] = useState(0);
-  const [seqLen, setSeqLen] = useState(30);
-  const [isPredicting, setIsPredicting] = useState(false);
-  const [cameraError, setCameraError] = useState<string | null>(null);
-  const [autoPredict, setAutoPredict] = useState(true);
-  const [justPredicted, setJustPredicted] = useState(false);
+// forwardRef so a parent can access the canvas element for sequence frame pushing
+const WebcamCapture = forwardRef<WebcamCaptureHandle, WebcamCaptureProps>(
+  function WebcamCapture({ onResult, active }, ref) {
+    const videoRef = useRef<HTMLVideoElement | null>(null);
+    const canvasRef = useRef<HTMLCanvasElement | null>(null);
+    const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+    const streamRef = useRef<MediaStream | null>(null);
 
-  // Ring geometry
-  const RING_R = 44;
-  const RING_C = 50;
-  const circumference = 2 * Math.PI * RING_R;
-  const dashOffset = circumference * (1 - bufferFill);
+    const [camState, setCamState] = useState<CamState>("idle");
+    const [error, setError] = useState("");
+    const [fps, setFps] = useState(0);
 
-  const fillColor =
-    bufferFill >= 0.9 ? "#39ff14" :
-    bufferFill >= 0.5 ? "#00e5ff" :
-    "#334155";
-
-  // ── Camera ─────────────────────────────────────────────────────────────────
-
-  const startCamera = useCallback(async () => {
-    setCameraError(null);
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: { width: 640, height: 480, facingMode: "user" },
-      });
-      if (videoRef.current) {
-        videoRef.current.srcObject = stream;
-        await videoRef.current.play();
+    const startCamera = useCallback(async () => {
+      setCamState("loading");
+      setError("");
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: { width: 640, height: 480, facingMode: "user" },
+        });
+        streamRef.current = stream;
+        if (videoRef.current) {
+          videoRef.current.srcObject = stream;
+          await videoRef.current.play();
+        }
+        setCamState("active");
+      } catch (err) {
+        const msg =
+          err instanceof Error ? err.message : "Camera access denied";
+        setError(msg);
+        setCamState("error");
       }
-      setIsCapturing(true);
-    } catch {
-      setCameraError("Camera access denied. Check browser permissions.");
-    }
-  }, []);
+    }, []);
 
-  const stopCamera = useCallback(() => {
-    if (pushTimerRef.current) clearInterval(pushTimerRef.current);
-    pushTimerRef.current = null;
-    if (videoRef.current?.srcObject) {
-      (videoRef.current.srcObject as MediaStream).getTracks().forEach((t) => t.stop());
-      videoRef.current.srcObject = null;
-    }
-    setIsCapturing(false);
-    setBufferFill(0);
-    setFrames(0);
-  }, []);
+    const stopCamera = useCallback(() => {
+      if (intervalRef.current) clearInterval(intervalRef.current);
+      streamRef.current?.getTracks().forEach((t) => t.stop());
+      streamRef.current = null;
+      if (videoRef.current) videoRef.current.srcObject = null;
+      setCamState("idle");
+      setFps(0);
+      onResult?.(null);
+    }, [onResult]);
 
-  // ── Frame loop ──────────────────────────────────────────────────────────────
+    // Expose canvas + imperative controls to parent via ref
+    useImperativeHandle(
+      ref,
+      () => ({
+        get canvas() {
+          return canvasRef.current;
+        },
+        start: startCamera,
+        stop: stopCamera,
+      }),
+      [startCamera, stopCamera]
+    );
 
-  const captureFrame = useCallback((): string | null => {
-    const video = videoRef.current;
-    const canvas = canvasRef.current;
-    if (!video || !canvas || video.readyState < 2) return null;
-    canvas.width = video.videoWidth || 640;
-    canvas.height = video.videoHeight || 480;
-    const ctx = canvas.getContext("2d");
-    if (!ctx) return null;
-    ctx.drawImage(video, 0, 0);
-    return canvas.toDataURL("image/jpeg", 0.6).split(",")[1];
-  }, []);
+    // Frame capture + predict loop
+    useEffect(() => {
+      if (camState !== "active") return;
 
-  const pushFrame = useCallback(async () => {
-    const b64 = captureFrame();
-    if (!b64) return;
-    try {
-      const res = await fetch(`${API_BASE}/api/sequence/push`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ frame: b64 }),
-      });
-      if (res.ok) {
-        const data = await res.json();
-        setBufferFill(data.buffer_fill ?? 0);
-        setFrames(data.frames ?? 0);
-        setSeqLen(data.seq_len ?? 30);
-      }
-    } catch { /* ignore */ }
-  }, [captureFrame]);
+      let frames = 0;
+      let fpsStart = performance.now();
 
-  // Push frames ONLY during active recording window
-  useEffect(() => {
-    if (isRecording) {
-      pushTimerRef.current = setInterval(pushFrame, PUSH_INTERVAL_MS);
-    } else {
-      if (pushTimerRef.current) clearInterval(pushTimerRef.current);
-    }
-    return () => { if (pushTimerRef.current) clearInterval(pushTimerRef.current); };
-  }, [isRecording, pushFrame]);
+      intervalRef.current = setInterval(() => {
+        const video = videoRef.current;
+        const canvas = canvasRef.current;
+        if (!video || !canvas || video.readyState < 2) return;
 
-  useEffect(() => () => stopCamera(), [stopCamera]);
+        const ctx = canvas.getContext("2d");
+        if (!ctx) return;
+        canvas.width = video.videoWidth || 640;
+        canvas.height = video.videoHeight || 480;
 
-  // Auto-predict when buffer is full (only during active recording)
-  useEffect(() => {
-    if (autoPredict && bufferFill >= 1.0 && isRecording && !isPredicting && !justPredicted) {
-      handlePredict();
-    }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [bufferFill, autoPredict, isRecording, isPredicting, justPredicted]);
+        // Mirror the frame (selfie orientation, matches the preview)
+        ctx.save();
+        ctx.scale(-1, 1);
+        ctx.drawImage(video, -canvas.width, 0, canvas.width, canvas.height);
+        ctx.restore();
 
-  // ── Predict ────────────────────────────────────────────────────────────────
+        const b64 = canvas.toDataURL("image/jpeg", 0.7).split(",")[1];
 
-  const handlePredict = async () => {
-    setIsRecording(false); // stop pushing new frames
-    setIsPredicting(true);
-    setJustPredicted(true);
-    try {
-      const res = await fetch(`${API_BASE}/api/sequence/predict`, { method: "POST" });
-      if (res.ok) {
-        const data = await res.json();
-        onResult(data);
-        // Always reset buffer after predict (ok or low_confidence)
-        await fetch(`${API_BASE}/api/sequence/reset`, { method: "POST" });
-        setBufferFill(0);
-        setFrames(0);
-      }
-    } catch {
-      console.error("Predict failed");
-    } finally {
-      setIsPredicting(false);
-      setTimeout(() => setJustPredicted(false), 3000);
-    }
-  };
+        // rough client-side capture FPS for the HUD
+        frames += 1;
+        const elapsed = performance.now() - fpsStart;
+        if (elapsed >= 1000) {
+          setFps(Math.round((frames * 1000) / elapsed));
+          frames = 0;
+          fpsStart = performance.now();
+        }
 
-  const handleReset = async () => {
-    setIsRecording(false);
-    try { await fetch(`${API_BASE}/api/sequence/reset`, { method: "POST" }); } catch { /* ignore */ }
-    setBufferFill(0);
-    setFrames(0);
-  };
+        fetch(`${API_BASE}/api/predict`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ frame: b64 }),
+        })
+          .then((r) => r.json())
+          .then((data) => {
+            if (!data.error) onResult?.(data);
+          })
+          .catch(() => {});
+      }, CAPTURE_INTERVAL);
 
-  // Start a fresh recording window
-  const handleStartRecording = async () => {
-    // Reset buffer first so we start clean
-    try { await fetch(`${API_BASE}/api/sequence/reset`, { method: "POST" }); } catch { /* ignore */ }
-    setBufferFill(0);
-    setFrames(0);
-    setIsRecording(true);
-  };
+      return () => {
+        if (intervalRef.current) clearInterval(intervalRef.current);
+      };
+    }, [camState, onResult]);
 
-  // ─────────────────────────────────────────────────────────────────────────
+    // Optional external control via `active` prop
+    useEffect(() => {
+      if (active === undefined) return;
+      if (active && camState === "idle") startCamera();
+      if (!active && camState === "active") stopCamera();
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [active]);
 
-  return (
-    <div style={{ display: "flex", flexDirection: "column", gap: "14px" }}>
+    // Cleanup on unmount
+    useEffect(
+      () => () => {
+        if (intervalRef.current) clearInterval(intervalRef.current);
+        streamRef.current?.getTracks().forEach((t) => t.stop());
+      },
+      []
+    );
 
-      {/* ── Webcam container with SVG ring ── */}
-      <div style={{ position: "relative", display: "flex", alignItems: "center", justifyContent: "center" }}>
+    return (
+      <div
+        className={`relative w-full aspect-video rounded-2xl overflow-hidden bg-[#07090f] ${
+          camState === "active" ? "glow-border-live" : "glow-border"
+        }`}
+      >
+        <video
+          ref={videoRef}
+          className="w-full h-full object-cover"
+          muted
+          playsInline
+          style={{ transform: "scaleX(-1)" }}
+        />
+        <canvas ref={canvasRef} className="hidden" />
 
-        {/* Outer ring wrapper (SVG overlaid) */}
-        <div style={{ position: "relative", width: "100%", aspectRatio: "4/3" }}>
-
-          {/* Video */}
-          <div
-            style={{
-              position: "absolute", inset: "8px",
-              borderRadius: "14px",
-              overflow: "hidden",
-              background: "#07090f",
-            }}
-          >
-            <video
-              ref={videoRef}
-              style={{
-                width: "100%", height: "100%",
-                objectFit: "cover",
-                display: isCapturing ? "block" : "none",
-              }}
-              playsInline muted
-            />
-
-            {/* Placeholder */}
-            {!isCapturing && (
-              <div style={{
-                position: "absolute", inset: 0,
-                display: "flex", flexDirection: "column",
-                alignItems: "center", justifyContent: "center",
-                gap: "12px", padding: "24px", textAlign: "center",
-              }}>
-                {cameraError ? (
-                  <>
-                    <CameraOff size={36} color="#ff3d5a" />
-                    <p style={{ color: "#ff3d5a", fontSize: "13px" }}>{cameraError}</p>
-                  </>
-                ) : (
-                  <>
-                    <div style={{ fontSize: "40px", opacity: 0.3 }}>🤟</div>
-                    <p style={{ color: "#64748b", fontSize: "14px", fontWeight: 500 }}>Camera is off</p>
-                    <div style={{
-                      background: "rgba(0,229,255,0.06)", border: "1px solid rgba(0,229,255,0.15)",
-                      borderRadius: "10px", padding: "10px 14px", textAlign: "left"
-                    }}>
-                      {["Start Camera", "Sign a phrase clearly", "Auto-predicts when ready"].map((s, i) => (
-                        <div key={i} style={{ display: "flex", alignItems: "center", gap: "8px", padding: "3px 0" }}>
-                          <span style={{
-                            width: "18px", height: "18px", borderRadius: "50%",
-                            background: "rgba(0,229,255,0.15)", border: "1px solid rgba(0,229,255,0.3)",
-                            fontSize: "10px", fontWeight: 700, color: "#00e5ff",
-                            display: "flex", alignItems: "center", justifyContent: "center",
-                            flexShrink: 0,
-                          }}>{i + 1}</span>
-                          <span style={{ fontSize: "12px", color: "#94a3b8" }}>{s}</span>
-                        </div>
-                      ))}
-                    </div>
-                  </>
-                )}
-              </div>
-            )}
-
-            {/* Analyzing overlay */}
-            {isPredicting && (
-              <div style={{
-                position: "absolute", inset: 0,
-                background: "rgba(7,9,15,0.82)",
-                display: "flex", flexDirection: "column",
-                alignItems: "center", justifyContent: "center",
-                gap: "10px", backdropFilter: "blur(4px)",
-              }}>
-                <Loader2 size={36} color="#00e5ff" style={{ animation: "spin 1s linear infinite" }} />
-                <p className="shimmer-text" style={{ fontSize: "16px", fontWeight: 700, letterSpacing: "0.06em" }}>
-                  ANALYZING…
-                </p>
-              </div>
-            )}
-
-            {/* Idle overlay: prompt to record */}
-            {isCapturing && !isRecording && !isPredicting && bufferFill === 0 && (
-              <div style={{
-                position: "absolute", inset: 0,
-                display: "flex", flexDirection: "column",
-                alignItems: "center", justifyContent: "center",
-                gap: "8px",
-                background: "rgba(7,9,15,0.55)",
-                backdropFilter: "blur(2px)",
-              }}>
-                <p style={{ color: "#94a3b8", fontSize: "13px", fontWeight: 500 }}>Camera ready</p>
-                <p style={{ color: "#334155", fontSize: "11px", fontFamily: "JetBrains Mono, monospace" }}>Press ● Record then sign a phrase</p>
-              </div>
-            )}
-
-            {/* Buffer HUD (only during recording) */}
-            {isRecording && !isPredicting && (
-              <div style={{
-                position: "absolute", top: "10px", left: "10px", right: "10px",
-                display: "flex", alignItems: "center", gap: "8px",
-              }}>
-                <div className="recording-dot" />
-                <div style={{ flex: 1, height: "3px", borderRadius: "2px", background: "rgba(0,0,0,0.5)", overflow: "hidden" }}>
-                  <div style={{
-                    height: "100%", borderRadius: "2px",
-                    width: `${bufferFill * 100}%`,
-                    background: `linear-gradient(90deg, ${fillColor}80, ${fillColor})`,
-                    boxShadow: `0 0 6px ${fillColor}80`,
-                    transition: "width 0.2s ease",
-                  }} />
-                </div>
-                <span style={{ fontFamily: "JetBrains Mono, monospace", fontSize: "10px", color: fillColor, fontWeight: 600, flexShrink: 0 }}>
-                  {frames}/{seqLen}
-                </span>
-              </div>
-            )}
-
-            {/* Ready badge */}
-            {isRecording && bufferFill >= 1.0 && !isPredicting && (
-              <div style={{
-                position: "absolute", bottom: "10px", left: "50%", transform: "translateX(-50%)",
-                background: "rgba(57,255,20,0.15)", border: "1px solid rgba(57,255,20,0.4)",
-                borderRadius: "20px", padding: "4px 14px",
-                fontSize: "11px", fontWeight: 700, color: "#39ff14",
-                fontFamily: "JetBrains Mono, monospace", letterSpacing: "0.08em",
-                animation: "fadeIn 0.3s ease",
-              }}>
-                {autoPredict ? "⚡ Auto-predicting…" : "✓ Ready — press Predict"}
-              </div>
-            )}
+        {camState === "idle" && (
+          <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 bg-[#07090f]">
+            <div className="w-20 h-20 rounded-full bg-[#111827] flex items-center justify-center border border-[#1e2d45]">
+              <Camera className="w-9 h-9 text-[#4a5568]" />
+            </div>
+            <p className="text-[#4a5568] text-sm font-medium tracking-wide">
+              Camera not started
+            </p>
+            <button className="btn btn-accent" onClick={startCamera}>
+              <Power size={14} /> Start Camera
+            </button>
           </div>
+        )}
 
-          {/* SVG circular progress ring — shown only during recording */}
-          {isRecording && (
-            <svg
-              viewBox="0 0 100 100"
-              style={{
-                position: "absolute", inset: 0,
-                width: "100%", height: "100%",
-                pointerEvents: "none",
-              }}
+        {camState === "loading" && (
+          <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-[#07090f]">
+            <Loader2 className="w-10 h-10 text-[#00e5ff] animate-spin" />
+            <p className="text-[#00e5ff] text-sm tracking-widest uppercase font-medium">
+              Initializing camera…
+            </p>
+          </div>
+        )}
+
+        {camState === "error" && (
+          <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 bg-[#07090f] px-6">
+            <div className="w-20 h-20 rounded-full bg-[#ff3d5a15] flex items-center justify-center border border-[#ff3d5a40]">
+              <CameraOff className="w-9 h-9 text-[#ff3d5a]" />
+            </div>
+            <div className="text-center">
+              <p className="text-[#ff3d5a] font-semibold">Camera Error</p>
+              <p className="text-[#4a5568] text-sm mt-1">{error}</p>
+            </div>
+            <button
+              onClick={startCamera}
+              className="px-5 py-2 rounded-lg bg-[#1a2235] border border-[#1e2d45] text-[#00e5ff] text-sm hover:border-[#00e5ff50] transition-colors"
             >
-              <circle
-                cx={RING_C} cy={RING_C} r={RING_R}
-                fill="none"
-                stroke="rgba(255,255,255,0.06)"
-                strokeWidth="2.5"
-              />
-              <circle
-                cx={RING_C} cy={RING_C} r={RING_R}
-                fill="none"
-                stroke={fillColor}
-                strokeWidth="2.5"
-                strokeLinecap="round"
-                strokeDasharray={circumference}
-                strokeDashoffset={dashOffset}
-                className="ring-progress"
-                style={{
-                  filter: `drop-shadow(0 0 4px ${fillColor}80)`,
-                  transition: "stroke-dashoffset 0.2s ease, stroke 0.4s ease",
-                }}
-              />
-            </svg>
-          )}
-        </div>
-      </div>
-
-      {/* Hidden canvas */}
-      <canvas ref={canvasRef} style={{ display: "none" }} />
-
-      {/* ── Controls ── */}
-      <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
-
-        {/* Auto-predict toggle */}
-        <div style={{
-          display: "flex", alignItems: "center", justifyContent: "space-between",
-          padding: "8px 12px",
-          background: "rgba(255,255,255,0.03)",
-          border: "1px solid rgba(255,255,255,0.07)",
-          borderRadius: "10px",
-        }}>
-          <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
-            <Wand2 size={13} color="#64748b" />
-            <span style={{ fontSize: "12px", color: "#94a3b8" }}>Auto-predict</span>
+              Retry
+            </button>
           </div>
-          <button
-            onClick={() => setAutoPredict((v) => !v)}
-            style={{
-              width: "36px", height: "20px",
-              borderRadius: "10px",
-              border: "none", cursor: "pointer",
-              background: autoPredict ? "rgba(57,255,20,0.3)" : "rgba(255,255,255,0.08)",
-              position: "relative",
-              transition: "background 0.2s",
-            }}
-          >
-            <div style={{
-              position: "absolute",
-              top: "2px",
-              left: autoPredict ? "18px" : "2px",
-              width: "16px", height: "16px",
-              borderRadius: "50%",
-              background: autoPredict ? "#39ff14" : "#64748b",
-              transition: "left 0.2s, background 0.2s",
-              boxShadow: autoPredict ? "0 0 6px rgba(57,255,20,0.6)" : "none",
-            }} />
-          </button>
-        </div>
+        )}
 
-        {/* Action buttons */}
-        <div style={{ display: "flex", gap: "8px" }}>
-          {/* Start / Stop camera */}
-          <button
-            id="camera-toggle-btn"
-            className={isCapturing ? "btn btn-danger" : "btn btn-accent"}
-            style={{ padding: "10px 12px" }}
-            onClick={isCapturing ? stopCamera : startCamera}
-            title={isCapturing ? "Stop camera" : "Start camera"}
-          >
-            {isCapturing ? <CameraOff size={14} /> : <Camera size={14} />}
-          </button>
+        {camState === "active" && (
+          <>
+            {/* Scanning laser */}
+            <div className="scan-line" />
 
-          {/* Record button — the main action */}
-          <button
-            id="record-btn"
-            className={isRecording ? "btn btn-danger" : "btn btn-accent"}
-            style={{ flex: 1, fontWeight: 700 }}
-            onClick={isRecording ? handleReset : handleStartRecording}
-            disabled={!isCapturing || isPredicting}
-          >
-            {isRecording
-              ? <><Radio size={14} style={{ animation: "pulse 1s ease infinite" }} /> Recording…</>
-              : <><Radio size={14} /> Record Sign</>
-            }
-          </button>
+            {/* LIVE badge */}
+            <div className="absolute top-3 left-3 flex items-center gap-2 bg-black/50 backdrop-blur-sm rounded-full px-3 py-1">
+              <span className="w-2 h-2 rounded-full bg-[#39ff14] pulse-ring" />
+              <span className="text-xs font-mono text-[#39ff14] tracking-wider">
+                LIVE
+              </span>
+            </div>
 
-          {/* Manual predict */}
-          <button
-            id="predict-btn"
-            className="btn btn-signal"
-            style={{ padding: "10px 12px" }}
-            onClick={handlePredict}
-            disabled={!isCapturing || bufferFill < 0.5 || isPredicting}
-            title="Predict now"
-          >
-            {isPredicting
-              ? <Loader2 size={14} style={{ animation: "spin 1s linear infinite" }} />
-              : <Zap size={14} />
-            }
-          </button>
-        </div>
+            {/* FPS readout */}
+            <div className="absolute bottom-3 left-3 bg-black/50 backdrop-blur-sm rounded-full px-3 py-1">
+              <span className="text-xs font-mono text-[#64748b] tracking-wider">
+                {fps} FPS
+              </span>
+            </div>
+
+            {/* Stop control */}
+            <button
+              onClick={stopCamera}
+              title="Stop camera"
+              className="absolute top-3 right-3 flex items-center gap-1.5 bg-black/50 hover:bg-[#ff3d5a20] backdrop-blur-sm rounded-full px-3 py-1 border border-transparent hover:border-[#ff3d5a40] transition-colors"
+            >
+              <CameraOff size={13} className="text-[#ff3d5a]" />
+              <span className="text-xs font-mono text-[#ff3d5a] tracking-wider">
+                STOP
+              </span>
+            </button>
+          </>
+        )}
+
+        <div className="absolute inset-0 scanlines pointer-events-none" />
+
+        {["top-0 left-0", "top-0 right-0", "bottom-0 left-0", "bottom-0 right-0"].map(
+          (pos, i) => (
+            <div
+              key={i}
+              className={`absolute ${pos} w-8 h-8 pointer-events-none`}
+              style={{
+                borderTop: i < 2 ? "2px solid rgba(0,229,255,0.4)" : "none",
+                borderBottom: i >= 2 ? "2px solid rgba(0,229,255,0.4)" : "none",
+                borderLeft: i % 2 === 0 ? "2px solid rgba(0,229,255,0.4)" : "none",
+                borderRight: i % 2 === 1 ? "2px solid rgba(0,229,255,0.4)" : "none",
+              }}
+            />
+          )
+        )}
       </div>
+    );
+  }
+);
 
-      {/* Spin keyframe */}
-      <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
-    </div>
-  );
-}
+export default WebcamCapture;

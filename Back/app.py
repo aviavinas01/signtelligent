@@ -17,7 +17,7 @@ Original endpoints (v1, unchanged):
     GET  /api/gestures              — list supported gestures
     GET  /api/health
 
-Run:
+Run:on the python command line:
     python app.py
 """
 
@@ -128,8 +128,7 @@ class WebcamStream:
             self._cap.release()
 
     def _loop(self):
-        fp   = get_frame_predictor()
-        stab = GestureStabilizer()
+        fp = get_frame_predictor()
         while self._running:
             ret, frame = self._cap.read()
             if not ret:
@@ -137,12 +136,9 @@ class WebcamStream:
                 continue
             frame  = cv2.flip(frame, 1)
             result = fp.predict_frame(frame, draw=False)
-            try:
-                sp = get_seq_predictor()
-                sp.push_frame(frame)
-            except Exception:
-                pass
-            stable = stab.update(result.get("gesture", "no_gesture"))
+            # Sequence frames are pushed only via /api/sequence/push, so the
+            # client stays in control of buffering/resets. Do not auto-push here.
+            stable = _frame_stabilizer.update(result.get("gesture", "no_gesture"))
             with self._lock:
                 self._latest = {
                     **result,
@@ -358,21 +354,27 @@ def clear_sentence():
 # ─── Entry point ────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
-    # Quiet per-request access logs (health pings every 8s are noisy)
+    # Keep werkzeug at WARNING so the running server still shows request
+    # activity — silencing it entirely makes a working server look frozen.
     import logging
-    logging.getLogger("werkzeug").setLevel(logging.ERROR)
+    logging.getLogger("werkzeug").setLevel(logging.WARNING)
 
     print("\n" + "="*60)
     print("  SignSense Backend  v2  (Frame + LSTM)")
     print("="*60)
+    print("  Loading models — first boot loads TensorFlow + MediaPipe,")
+    print("  which can take 20–40s. This is NOT a freeze; please wait…\n",
+          flush=True)
     for label, loader in [("Frame model", get_frame_predictor),
                            ("LSTM model",  get_seq_predictor)]:
+        print(f"  {label:<15} loading…", end="", flush=True)
         try:
             loader()
-            print(f"  {label:<15} loaded  OK")
+            print(" OK", flush=True)
         except FileNotFoundError as e:
-            print(f"  {label:<15} NOT FOUND — {e}")
-    print(f"\n  Server   http://localhost:5000")
+            print(f" NOT FOUND — {e}", flush=True)
+    print(f"\n  Server   http://localhost:5000  (Ctrl+C to stop)")
     print(f"  Frontend http://localhost:5173")
-    print("="*60 + "\n")
+    print("  The terminal now stays open serving requests — that is normal.")
+    print("="*60 + "\n", flush=True)
     app.run(host="0.0.0.0", port=5000, debug=False, threaded=True)

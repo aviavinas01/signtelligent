@@ -10,6 +10,7 @@ import SignDisplay from "./pages/SignDisplay";
 import SentenceBuilder from "./components/SentenceBuilder";
 import GestureGuide from "./components/GestureGuide";
 import StatusBar from "./components/StatusBar";
+import Onboarding from "./components/Onboarding";
 
 const API_BASE = "http://localhost:5000";
 
@@ -17,9 +18,9 @@ export default function App() {
   const [result, setResult] = useState<Record<string, unknown> | null>(null);
   const [sentence, setSentence] = useState("");
 
-  const handleResult = useCallback((data: Record<string, unknown>) => {
+  const handleResult = useCallback((data: Record<string, unknown> | null) => {
     setResult(data);
-    if (data.status === "ok" && data.display) {
+    if (data && data.status === "ok" && data.display) {
       setSentence((prev) => prev ? `${prev} ${data.display}` : (data.display as string));
     }
   }, []);
@@ -55,6 +56,7 @@ export default function App() {
       {/* ── Header ── */}
       <header style={{
         display: "flex", alignItems: "center", justifyContent: "space-between",
+        flexWrap: "wrap", rowGap: "10px",
         padding: "14px 24px",
         borderBottom: "1px solid rgba(255,255,255,0.06)",
         background: "rgba(7,9,15,0.8)",
@@ -62,13 +64,12 @@ export default function App() {
         position: "sticky", top: 0, zIndex: 100,
       }}>
         <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
-          <div style={{
+          <div className="logo-mark" style={{
             width: "36px", height: "36px", borderRadius: "10px",
             background: "linear-gradient(135deg, rgba(0,229,255,0.2) 0%, rgba(57,255,20,0.1) 100%)",
             border: "1px solid rgba(0,229,255,0.25)",
             display: "flex", alignItems: "center", justifyContent: "center",
             fontSize: "18px",
-            boxShadow: "0 0 16px rgba(0,229,255,0.15)",
           }}>
             〥
           </div>
@@ -94,17 +95,11 @@ export default function App() {
         <StatusBar />
       </header>
 
+      {/* ── Onboarding (first run) ── */}
+      <Onboarding />
+
       {/* ── Main grid ── */}
-      <main style={{
-        display: "grid",
-        gridTemplateColumns: "minmax(300px, 2fr) minmax(280px, 2fr) minmax(240px, 1.5fr)",
-        gap: "16px",
-        padding: "20px 24px",
-        maxWidth: "1400px",
-        margin: "0 auto",
-        minHeight: "calc(100vh - 68px)",
-        alignItems: "start",
-      }}>
+      <main className="app-grid">
 
         {/* Left — Webcam + Sentence */}
         <div style={{ display: "flex", flexDirection: "column", gap: "14px" }}>
@@ -127,7 +122,7 @@ export default function App() {
         </div>
 
         {/* Right — Phrase guide */}
-        <div style={{ height: "calc(100vh - 108px)", position: "sticky", top: "68px" }}>
+        <div className="app-guide">
           <GestureGuide activeGesture={result?.phrase as string | undefined ?? result?.gesture as string | undefined} />
         </div>
       </main>
