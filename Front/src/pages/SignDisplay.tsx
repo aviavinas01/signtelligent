@@ -4,7 +4,7 @@
  * Added animated reveal, confidence ring around emoji, better layout
  */
 import { useEffect, useRef, useState } from "react";
-import { Volume2, VolumeX, Plus } from "lucide-react";
+import { Volume2, VolumeX, Plus, Hand, AlertTriangle } from "lucide-react";
 
 interface TopKItem {
   gesture?: string;
@@ -49,7 +49,7 @@ export default function SignDisplay({
   // Support both frame-model (gesture) and LSTM (phrase) field names
   const phrase     = (result?.phrase ?? result?.gesture ?? "") as string;
   const display    = (result?.display ?? "") as string;
-  const emoji      = (result?.emoji ?? "🤟") as string;
+  const emoji      = (result?.emoji ?? "") as string;
   const confidence = (result?.confidence ?? 0) as number;
   const topK       = (result?.top_k ?? []) as TopKItem[];
   // Show result for both 'ok' and 'low_confidence' (so user sees what was predicted)
@@ -160,8 +160,8 @@ export default function SignDisplay({
                 {label} · {(confidence * 100).toFixed(0)}%
               </span>
               {isLowConf && (
-                <div style={{ marginTop: "4px", fontSize: "11px", color: "#ffb800" }}>
-                  ⚠ Low confidence — try signing more clearly
+                <div style={{ marginTop: "6px", fontSize: "11px", color: "#ffb800", display: "flex", alignItems: "center", justifyContent: "center", gap: "5px" }}>
+                  <AlertTriangle size={12} /> Low confidence — try signing more clearly
                 </div>
               )}
             </div>
@@ -202,7 +202,9 @@ export default function SignDisplay({
           </>
         ) : (
           <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: "10px", textAlign: "center" }}>
-            <div className="float" style={{ fontSize: "52px", opacity: 0.25 }}>🤟</div>
+            <div className="float" style={{ opacity: 0.2, color: "#64748b" }}>
+              <Hand size={46} strokeWidth={1.5} />
+            </div>
             <p style={{ color: "#64748b", fontSize: "15px", fontWeight: 500 }}>
               Waiting for prediction
             </p>

@@ -4,6 +4,7 @@
  * Immersive dark header with gradient logo
  */
 import { useState, useCallback } from "react";
+import { Hand } from "lucide-react";
 
 import WebCamCapture from "./components/WebCamCapture";
 import SignDisplay from "./pages/SignDisplay";
@@ -66,19 +67,17 @@ export default function App() {
         <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
           <div className="logo-mark" style={{
             width: "36px", height: "36px", borderRadius: "10px",
-            background: "linear-gradient(135deg, rgba(0,229,255,0.2) 0%, rgba(57,255,20,0.1) 100%)",
+            background: "rgba(0,229,255,0.08)",
             border: "1px solid rgba(0,229,255,0.25)",
             display: "flex", alignItems: "center", justifyContent: "center",
-            fontSize: "18px",
+            color: "#00e5ff",
           }}>
-            〥
+            <Hand size={18} strokeWidth={2} />
           </div>
           <div>
             <h1 style={{
               fontSize: "17px", fontWeight: 700, letterSpacing: "-0.02em",
-              background: "linear-gradient(90deg, #00e5ff, #39ff14)",
-              WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent",
-              backgroundClip: "text",
+              color: "#f1f5f9",
               margin: 0, lineHeight: 1.1,
             }}>
               Signtelligent
