@@ -2,7 +2,8 @@
   "seq_len": 30,
   "n_features": 132,
   "num_phrases": 19,
-  "val_accuracy": 0.9989,
+  "val_accuracy": 0.987,
+  "test_accuracy": 0.9174,
   "phrase_ids": [
     "hello_how_are_you",
     "thank_you",

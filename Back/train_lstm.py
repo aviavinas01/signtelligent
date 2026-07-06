@@ -31,12 +31,22 @@ from tensorflow import keras
 from tensorflow.keras import layers, callbacks, regularizers
 from sklearn.model_selection import train_test_split
 from sklearn.utils.class_weight import compute_class_weight
+from sklearn.metrics import classification_report, confusion_matrix
 from phrases import PHRASES, NUM_PHRASES, ID_TO_IDX, PHRASE_IDS
+
+# ─── Feature layout (per 132-dim frame) ──────────────────────────────────────────
+#   [0:63]    left-hand landmarks   (21 pts × xyz, wrist-relative)
+#   [63:126]  right-hand landmarks  (21 pts × xyz, wrist-relative)
+#   [126:129] left shoulder         (x, y, z — absolute)
+#   [129:132] right shoulder        (x, y, z — absolute)
+_LH, _RH = slice(0, 63), slice(63, 126)
+_LS, _RS = slice(126, 129), slice(129, 132)
 
 DATA_DIR    = "sequence_data"
 MODEL_DIR   = "models"
 MODEL_PATH  = os.path.join(MODEL_DIR, "lstm_model.keras")
 CONFIG_PATH = os.path.join(MODEL_DIR, "lstm_config.json")
+REPORT_PATH = os.path.join(MODEL_DIR, "lstm_report.txt")
 
 # Feature vector size: 63 (left hand) + 63 (right hand) + 6 (shoulders) = 132
 N_FEATURES = 132
@@ -112,13 +122,39 @@ def load_sequences(seq_len: int) -> tuple[np.ndarray, np.ndarray, list, dict]:
 
 # ─── Data augmentation ──────────────────────────────────────────────────────────
 
-def augment_sequences(X: np.ndarray, y: np.ndarray,
-                      factor: int = 3) -> tuple[np.ndarray, np.ndarray]:
+def _mirror_batch(batch: np.ndarray) -> np.ndarray:
     """
-    Light augmentation to improve generalisation:
+    Horizontally mirror a batch of sequences (left/right hand swap + x negation).
+    Padded (all-zero) frames are restored to zero so Masking still works.
+    NOTE: only enable for phrases that are NOT handedness-specific.
+    """
+    m = batch.copy()
+    # Swap left/right hand blocks
+    m[..., _LH] = batch[..., _RH]
+    m[..., _RH] = batch[..., _LH]
+    # Negate the x component of every hand landmark (wrist-relative → mirror = -x)
+    m[..., _LH][..., 0::3] *= -1.0
+    m[..., _RH][..., 0::3] *= -1.0
+    # Swap shoulders and mirror their absolute x (in [0,1] → 1 - x)
+    m[..., _LS] = batch[..., _RS]
+    m[..., _RS] = batch[..., _LS]
+    m[..., _LS][..., 0] = 1.0 - m[..., _LS][..., 0]
+    m[..., _RS][..., 0] = 1.0 - m[..., _RS][..., 0]
+    # Re-zero frames that were padding (all-zero) in the original
+    active = (np.abs(batch).sum(axis=-1, keepdims=True) > 0).astype(np.float32)
+    return m * active
+
+
+def augment_sequences(X: np.ndarray, y: np.ndarray,
+                      factor: int = 3, mirror: bool = False) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Augmentation to improve generalisation. Applied to the TRAINING set only.
       • Gaussian jitter on landmark coordinates (simulates hand tremor)
       • Random scale in [0.90, 1.10]  (simulates distance to camera)
       • Random time-shift ± 3 frames   (simulates start-time variance)
+      • Random frame dropout           (simulates dropped/occluded frames)
+      • Optional horizontal mirror     (only if signs are handedness-agnostic)
+    Padded (all-zero) frames are preserved so the Masking layer keeps working.
     Multiplies dataset size by `factor`.
     """
     N, T, F = X.shape
@@ -129,8 +165,11 @@ def augment_sequences(X: np.ndarray, y: np.ndarray,
     for _ in range(factor - 1):
         batch = X.copy()
 
-        # Jitter
-        batch += rng.normal(0, 0.008, batch.shape).astype(np.float32)
+        # Per-frame "active" mask (1 for real frames, 0 for zero-padding)
+        active = (np.abs(batch).sum(axis=-1, keepdims=True) > 0).astype(np.float32)
+
+        # Jitter — but never on padded frames (keeps them exactly 0 for Masking)
+        batch += rng.normal(0, 0.008, batch.shape).astype(np.float32) * active
 
         # Scale
         scales = rng.uniform(0.90, 1.10, (N, 1, 1)).astype(np.float32)
@@ -148,6 +187,16 @@ def augment_sequences(X: np.ndarray, y: np.ndarray,
                 shifted[i, :T + s] = batch[i, -s:]
         batch = shifted
 
+        # Frame dropout — zero out ~5% of real frames at random
+        drop = (rng.random((N, T, 1)) < 0.05).astype(np.float32)
+        batch *= (1.0 - drop)
+
+        # Optional mirror on a random half of this augmented copy
+        if mirror:
+            flip = rng.random(N) < 0.5
+            if flip.any():
+                batch[flip] = _mirror_batch(batch[flip])
+
         X_aug.append(batch)
         y_aug.append(y.copy())
 
@@ -160,31 +209,36 @@ def build_model(seq_len: int, n_features: int = N_FEATURES,
                 n_classes: int = NUM_PHRASES) -> keras.Model:
     """
     Two-layer LSTM with batch-norm and dropout for CPU-friendly inference.
+    Capacity deliberately kept small — ~1.3k training sequences can't support
+    a large net without memorizing. A Masking layer skips zero-padded frames.
     Architecture:
-        Input  (seq_len, 132)
-        LSTM   256 units, return_sequences=True
-        BN + Dropout 0.4
-        LSTM   128 units, return_sequences=False
-        BN + Dropout 0.4
-        Dense  128, ReLU, L2=1e-4
+        Input   (seq_len, 132)
+        Masking (mask_value=0.0)
+        LSTM    96 units, return_sequences=True
+        BN + Dropout 0.5
+        LSTM    48 units, return_sequences=False
+        BN + Dropout 0.5
+        Dense   64, ReLU, L2=1e-4
         Dropout 0.4
-        Dense  n_classes, Softmax
+        Dense   n_classes, Softmax
     """
     inp = keras.Input(shape=(seq_len, n_features), name="landmarks")
 
-    x = layers.LSTM(256, return_sequences=True,
-                    recurrent_dropout=0.20,     # prevents memorizing exact sequences
-                    name="lstm_1")(inp)
-    x = layers.BatchNormalization()(x)
-    x = layers.Dropout(0.50)(x)                 # increased from 0.40
+    x = layers.Masking(mask_value=0.0, name="mask_padding")(inp)
 
-    x = layers.LSTM(128, return_sequences=False,
+    x = layers.LSTM(96, return_sequences=True,
+                    recurrent_dropout=0.20,     # prevents memorizing exact sequences
+                    name="lstm_1")(x)
+    x = layers.BatchNormalization()(x)
+    x = layers.Dropout(0.50)(x)
+
+    x = layers.LSTM(48, return_sequences=False,
                     recurrent_dropout=0.20,     # prevents memorizing exact sequences
                     name="lstm_2")(x)
     x = layers.BatchNormalization()(x)
-    x = layers.Dropout(0.50)(x)                 # increased from 0.40
+    x = layers.Dropout(0.50)(x)
 
-    x = layers.Dense(128, activation="relu",
+    x = layers.Dense(64, activation="relu",
                      kernel_regularizer=regularizers.l2(1e-4),
                      name="dense_1")(x)
     x = layers.Dropout(0.40)(x)
@@ -198,7 +252,7 @@ def build_model(seq_len: int, n_features: int = N_FEATURES,
 # ─── Training ───────────────────────────────────────────────────────────────────
 
 def train(seq_len: int = 30, epochs: int = 80, batch_size: int = 32,
-          augment: bool = True, demo: bool = False):
+          augment: bool = True, demo: bool = False, mirror: bool = False):
 
     print("\n" + "═"*60)
     print("  ASL LSTM Sequence Model Trainer")
@@ -222,17 +276,23 @@ def train(seq_len: int = 30, epochs: int = 80, batch_size: int = 32,
         print(f"[NOTE] phrases.py defines {NUM_PHRASES} phrases but only "
               f"{n_classes} have data. Model will have {n_classes} outputs.")
 
-    # ── Augment ─────────────────────────────────────────────────────────────────
-    if augment and not demo:
-        print(f"\n[Aug]  Augmenting ×4 …")
-        X, y = augment_sequences(X, y, factor=4)
-        print(f"[Aug]  Augmented dataset: X={X.shape}")
-
-    # ── Split ───────────────────────────────────────────────────────────────────
-    X_train, X_val, y_train, y_val = train_test_split(
+    # ── Split BEFORE augmenting ──────────────────────────────────────────────────
+    # Augmenting first would leak near-identical "twin" copies of the same
+    # recording into both train and val/test, inflating the scores. So we split
+    # the raw sequences first (70/15/15), then augment ONLY the training set.
+    X_temp, X_test, y_temp, y_test = train_test_split(
         X, y, test_size=0.15, stratify=y, random_state=42
     )
-    print(f"\n[Split] Train: {len(X_train)}  |  Val: {len(X_val)}")
+    X_train, X_val, y_train, y_val = train_test_split(
+        X_temp, y_temp, test_size=0.1765, stratify=y_temp, random_state=42
+    )  # 0.1765 × 0.85 ≈ 0.15 of the full set → 70 / 15 / 15
+    print(f"\n[Split] Train: {len(X_train)}  |  Val: {len(X_val)}  |  Test: {len(X_test)}")
+
+    # ── Augment (training set only) ──────────────────────────────────────────────
+    if augment and not demo:
+        print(f"\n[Aug]  Augmenting training set ×4  (mirror={mirror}) …")
+        X_train, y_train = augment_sequences(X_train, y_train, factor=4, mirror=mirror)
+        print(f"[Aug]  Augmented train set: X={X_train.shape}")
 
     # Class weights to handle imbalance
     classes = np.unique(y_train)
@@ -286,31 +346,56 @@ def train(seq_len: int = 30, epochs: int = 80, batch_size: int = 32,
         verbose=1,
     )
 
-    # ── Final evaluation ─────────────────────────────────────────────────────────
-    print("\n[Eval] Evaluating best checkpoint on validation set …")
+    # ── Final evaluation (honest: on the held-out TEST set) ──────────────────────
+    print("\n[Eval] Evaluating best checkpoint …")
     best_model = keras.models.load_model(MODEL_PATH)
-    val_loss, val_acc = best_model.evaluate(X_val, y_val, verbose=0)
-    print(f"       Val accuracy : {val_acc*100:.2f}%")
-    print(f"       Val loss     : {val_loss:.4f}")
 
-    # Per-class accuracy
-    y_pred  = np.argmax(best_model.predict(X_val, verbose=0), axis=1)
-    print("\n[Eval] Per-phrase accuracy:")
-    for new_idx, pid in enumerate(present_ids):
-        mask  = y_val == new_idx
+    train_acc          = best_model.evaluate(X_train, y_train, verbose=0)[1]
+    val_loss, val_acc  = best_model.evaluate(X_val, y_val, verbose=0)
+    test_loss, test_acc = best_model.evaluate(X_test, y_test, verbose=0)
+
+    gap = (train_acc - test_acc) * 100
+    print(f"       Train accuracy : {train_acc*100:.2f}%")
+    print(f"       Val   accuracy : {val_acc*100:.2f}%   (loss {val_loss:.4f})")
+    print(f"       Test  accuracy : {test_acc*100:.2f}%   (loss {test_loss:.4f})")
+    print(f"       Overfit gap    : {gap:+.1f} pts  (train − test; smaller is better)")
+
+    # ── Per-phrase report on the TEST set ────────────────────────────────────────
+    y_pred        = np.argmax(best_model.predict(X_test, verbose=0), axis=1)
+    display_names = [PHRASES[PHRASE_IDS.index(pid)]["display"] for pid in present_ids]
+
+    print("\n[Eval] Per-phrase accuracy (test):")
+    for new_idx, name in enumerate(display_names):
+        mask = y_test == new_idx
         if mask.sum() == 0:
             continue
-        p_acc  = (y_pred[mask] == new_idx).mean() * 100
-        phrase = PHRASES[PHRASE_IDS.index(pid)]["display"]
-        bar    = "█" * int(p_acc // 5)
-        print(f"       {phrase:<30} {p_acc:5.1f}%  {bar}")
+        p_acc = (y_pred[mask] == new_idx).mean() * 100
+        bar   = "█" * int(p_acc // 5)
+        print(f"       {name:<30} {p_acc:5.1f}%  {bar}")
+
+    # Persist a full classification report + confusion matrix for diagnosis
+    report = classification_report(
+        y_test, y_pred, labels=list(range(n_classes)),
+        target_names=display_names, zero_division=0,
+    )
+    cm = confusion_matrix(y_test, y_pred, labels=list(range(n_classes)))
+    with open(REPORT_PATH, "w", encoding="utf-8") as f:
+        f.write(f"Train acc: {train_acc*100:.2f}%  |  Val acc: {val_acc*100:.2f}%  |  "
+                f"Test acc: {test_acc*100:.2f}%  |  Overfit gap: {gap:+.1f} pts\n\n")
+        f.write("Classification report (test set)\n")
+        f.write(report + "\n\n")
+        f.write("Confusion matrix (rows=true, cols=pred)\n")
+        f.write("Labels: " + ", ".join(present_ids) + "\n")
+        f.write(str(cm) + "\n")
+    print(f"\n[Eval] Full report → {REPORT_PATH}")
 
     # ── Save config ─────────────────────────────────────────────────────────────
     config = {
         "seq_len":     seq_len,
         "n_features":  N_FEATURES,
         "num_phrases": n_classes,       # ← actual trained class count
-        "val_accuracy": round(val_acc, 4),
+        "val_accuracy":  round(float(val_acc), 4),
+        "test_accuracy": round(float(test_acc), 4),
         "phrase_ids":  present_ids,     # ← only IDs the model knows about
     }
     with open(CONFIG_PATH, "w") as f:
@@ -385,6 +470,9 @@ if __name__ == "__main__":
     parser.add_argument("--batch",    type=int, default=32)
     parser.add_argument("--augment",  action="store_true", default=True)
     parser.add_argument("--no-augment", dest="augment", action="store_false")
+    parser.add_argument("--mirror",   action="store_true", default=False,
+                        help="Add horizontal-mirror augmentation "
+                             "(only if signs are NOT handedness-specific)")
     parser.add_argument("--demo",     action="store_true",
                         help="Use synthetic data (no webcam needed)")
     args = parser.parse_args()
@@ -394,4 +482,5 @@ if __name__ == "__main__":
         batch_size=args.batch,
         augment=args.augment,
         demo=args.demo,
+        mirror=args.mirror,
     )
